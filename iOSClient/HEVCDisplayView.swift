@@ -22,9 +22,14 @@ final class HEVCDisplayView: UIView {
         didSet { zoom?.onChange = { [weak self] animated in self?.applyZoom(animated: animated) } }
     }
 
-    private var formatDescription: CMVideoFormatDescription?
-    private var waitingForKeyframe = true
-    private var lastParameterSets: Data?
+    /// The format state below is read and written by `enqueue`/`apply` on the client's network queue
+    /// and by `clear` on main (session teardown). The display layer's own enqueue/flush are safe off
+    /// main, but these three are Swift state with no such guarantee: a `clear()` landing between
+    /// `enqueue`'s read and use of `formatDescription` was a data race, not a tidy edge.
+    private let stateLock = NSLock()
+    private var formatDescription: CMVideoFormatDescription?   // stateLock
+    private var waitingForKeyframe = true                      // stateLock
+    private var lastParameterSets: Data?                       // stateLock
 
     /// The streamed frame's pixel size, reported on main whenever new parameter sets arrive.
     /// Input needs it: touches are normalized against the video, not against this view.
@@ -280,13 +285,17 @@ final class HEVCDisplayView: UIView {
         return shape
     }
 
-    /// Thread-safe: AVSampleBufferDisplayLayer's enqueue/flush are documented as safe off main.
+    /// Thread-safe: AVSampleBufferDisplayLayer's enqueue/flush are documented as safe off main, and
+    /// the format state is under `stateLock`.
     func apply(_ ps: ParameterSets) {
         // The host repeats the parameter sets with every keyframe. Only a real change (a new source,
         // a resize) needs a new format description and a blank layer; a repeat must not flicker.
         let encoded = ps.encoded()
-        if encoded == lastParameterSets, formatDescription != nil { return }
-        lastParameterSets = encoded
+        stateLock.lock()
+        let unchanged = encoded == lastParameterSets && formatDescription != nil
+        if !unchanged { lastParameterSets = encoded }
+        stateLock.unlock()
+        if unchanged { return }
         let buffers = ps.sets.map { set -> UnsafeMutablePointer<UInt8> in
             let p = UnsafeMutablePointer<UInt8>.allocate(capacity: set.count)
             set.copyBytes(to: p, count: set.count)
@@ -302,8 +311,10 @@ final class HEVCDisplayView: UIView {
             parameterSetSizes: sizes, nalUnitHeaderLength: Int32(ps.nalUnitHeaderLength),
             extensions: nil, formatDescriptionOut: &desc)
         guard status == noErr, let desc else { print("format description failed: \(status)"); return }
+        stateLock.lock()
         formatDescription = desc
         waitingForKeyframe = true
+        stateLock.unlock()
         let dimensions = CMVideoFormatDescriptionGetDimensions(desc)
         let size = CGSize(width: CGFloat(dimensions.width), height: CGFloat(dimensions.height))
         DispatchQueue.main.async { [weak self] in
@@ -320,9 +331,11 @@ final class HEVCDisplayView: UIView {
 
     /// Session over: drop the picture and forget the format so the next Mac starts clean.
     func clear() {
+        stateLock.lock()
         formatDescription = nil
         lastParameterSets = nil
         waitingForKeyframe = true
+        stateLock.unlock()
         displayLayer.flushAndRemoveImage()
         // The pointer's copy of the size is main-thread state; the client zeroes its own alongside.
         DispatchQueue.main.async { [weak self] in
@@ -332,11 +345,13 @@ final class HEVCDisplayView: UIView {
     }
 
     func enqueue(_ data: Data, isKeyframe: Bool) {
-        guard let desc = formatDescription else { return }
+        stateLock.lock()
+        var accepted = formatDescription
         if waitingForKeyframe {
-            guard isKeyframe else { return }
-            waitingForKeyframe = false
+            if isKeyframe { waitingForKeyframe = false } else { accepted = nil }
         }
+        stateLock.unlock()
+        guard let desc = accepted else { return }
 
         let count = data.count
         var block: CMBlockBuffer?
@@ -366,7 +381,9 @@ final class HEVCDisplayView: UIView {
         if displayLayer.status == .failed {
             print("display layer failed: \(String(describing: displayLayer.error))")
             displayLayer.flush()
+            stateLock.lock()
             waitingForKeyframe = true
+            stateLock.unlock()
             return
         }
         displayLayer.enqueue(sample)
