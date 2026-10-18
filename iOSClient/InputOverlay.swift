@@ -41,6 +41,11 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     /// Fires once a latch has been spent, so the key row can un-highlight itself.
     var onModifiersConsumed: (() -> Void)?
 
+    /// The modifiers a click on the picture is holding down, so the button-up releases exactly the
+    /// keys its button-down pressed. `InputEvent.pointer` has no modifier field (TrackpadView's
+    /// `click` says the same), so a latched ⌘/⌥/⇧ rides around the click as real key events.
+    private var heldClickModifiers: KeyModifiers = []
+
     /// Writes this device's own pointer and what drew it (`StreamClient.setOwnPointer`: a fraction of
     /// the video frame, nil for none). Only ever alongside what is sent anyway; it never sends
     /// anything itself. Everything here hands this device the pointer, and none of it shows an arrow
@@ -209,12 +214,17 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         zoom.toggle()
     }
 
-    /// A finger's tap at `point`, in this view: the pointer goes there, then clicks.
+    /// A finger's tap at `point`, in this view: the pointer goes there, then clicks. A latched
+    /// modifier is pressed around the click and spent by it, as it is on the key row and on the
+    /// trackpad — otherwise ⌘-tap was a plain tap and the latch armed the next keystroke instead.
     private func tap(at point: CGPoint) {
         setOwnPointer(nil, .none)
         guard sendPointer(.move, at: point, clamped: false) != nil else { return }
+        pressClickModifiers()
         sendPointer(.leftDown, at: point, clamped: false)
         sendPointer(.leftUp, at: point, clamped: false)
+        releaseClickModifiers()
+        consumeLatch()
     }
 
     /// Long press: the right button, since there is no second finger to spare for it.
@@ -224,8 +234,11 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         setOwnPointer(nil, .none)
         let point = gesture.location(in: self)
         guard sendPointer(.move, at: point, clamped: false) != nil else { return }
+        pressClickModifiers()
         sendPointer(.rightDown, at: point, clamped: false)
         sendPointer(.rightUp, at: point, clamped: false)
+        releaseClickModifiers()
+        consumeLatch()
     }
 
     /// Finger pan: scrolling, not dragging, shaped like a Mac trackpad gesture so the Mac
@@ -510,6 +523,7 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         ownPointer(at, for: touch)
         // A trackpad's secondary click (two fingers, or right button) is a right click on the Mac.
         pointerButtonIsSecondary = touch.type == .indirectPointer && (event?.buttonMask.contains(.secondary) ?? false)
+        pressClickModifiers()
         sendPointer(pointerButtonIsSecondary ? .rightDown : .leftDown, at: point, clamped: false)
     }
 
@@ -527,6 +541,8 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
             super.touchesEnded(touches, with: event); return
         }
         if let at = sendPointer(pointerButtonIsSecondary ? .rightUp : .leftUp, at: touch.location(in: self), clamped: true) { ownPointer(at, for: touch) }
+        releaseClickModifiers()
+        consumeLatch()
         pointerButtonIsSecondary = false
     }
 
@@ -535,8 +551,10 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         guard let touch = Self.pointerTouch(in: touches) else {
             super.touchesCancelled(touches, with: event); return
         }
-        // Never leave the button stuck down.
+        // Never leave the button stuck down, nor a modifier left pressed for it.
         if let at = sendPointer(pointerButtonIsSecondary ? .rightUp : .leftUp, at: touch.location(in: self), clamped: true) { ownPointer(at, for: touch) }
+        releaseClickModifiers()
+        consumeLatch()
         pointerButtonIsSecondary = false
     }
 
@@ -616,6 +634,21 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         guard !latchedModifiers.isEmpty else { return }
         latchedModifiers = []
         onModifiersConsumed?()
+    }
+
+    /// The latched modifiers as real key events around a click, the way the trackpad's `click` does
+    /// it: each key down carrying the flags in force at that moment, then up in reverse. Nothing is
+    /// pressed when nothing is latched, so the ordinary click is one pointer event each way.
+    private func pressClickModifiers() {
+        heldClickModifiers = latchedModifiers
+        guard !heldClickModifiers.isEmpty else { return }
+        KeyChord.modifiersDown(heldClickModifiers).forEach(send)
+    }
+
+    private func releaseClickModifiers() {
+        guard !heldClickModifiers.isEmpty else { return }
+        KeyChord.modifiersUp(heldClickModifiers).forEach(send)
+        heldClickModifiers = []
     }
 
     // MARK: Who holds the keyboard (InputOverlayProxy, HardwareKeyboardPolicy)
