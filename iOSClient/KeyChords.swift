@@ -145,10 +145,11 @@ struct ForwardedKeys {
     /// A key pressed, with the modifier flags UIKit gives it: its down, when it goes to the Mac as a
     /// key; nil when the text system takes it.
     mutating func began(_ usage: UInt16, modifiers: UInt64) -> InputEvent? {
+        repeating = nil
         guard Self.goesAsKey(usage, modifiers: modifiers) else { return nil }
         if !down.contains(usage) { down.append(usage) }
         let isModifier = KeyModifiers.flag(forKey: usage) != nil
-        repeating = (!isModifier && usage != 0x29) ? Repeating(usage: usage, modifiers: modifiers | held) : nil
+        if !isModifier, usage != 0x29 { repeating = Repeating(usage: usage, modifiers: modifiers | held) }
         return .key(hidUsage: usage, down: true, modifiers: isModifier ? held : modifiers)
     }
 

@@ -770,12 +770,17 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         stopKeyRepeat()
         guard let target = forwarded.repeating else { return }
         activeRepeat = target
-        keyRepeatDelayTimer = Timer.scheduledTimer(withTimeInterval: ForwardedKeys.repeatDelay, repeats: false) { [weak self] _ in
-            guard let self, self.isFirstResponder, self.forwarded.repeating == target else { self?.stopKeyRepeat(); return }
+        keyRepeatDelayTimer = Timer.scheduledTimer(withTimeInterval: ForwardedKeys.repeatDelay, repeats: false) { [weak self] timer in
+            guard let self, self.isFirstResponder, self.forwarded.repeating == target else {
+                timer.invalidate()
+                self?.stopKeyRepeat()
+                return
+            }
             if let event = self.forwarded.repeated() { self.send(event) }
-            self.keyRepeatTimer = Timer.scheduledTimer(withTimeInterval: ForwardedKeys.repeatInterval, repeats: true) { [weak self] _ in
+            self.keyRepeatTimer = Timer.scheduledTimer(withTimeInterval: ForwardedKeys.repeatInterval, repeats: true) { [weak self] timer in
                 guard let self, self.isFirstResponder, self.forwarded.repeating == target,
                       let event = self.forwarded.repeated() else {
+                    timer.invalidate()
                     self?.stopKeyRepeat()
                     return
                 }

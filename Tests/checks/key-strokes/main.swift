@@ -1370,6 +1370,11 @@ do {
     _ = f.pressed(uEsc, modifiers: 0, at: 3.0)
     check(f.repeated() == nil, "Esc does not repeat")
     _ = f.released(uEsc)
+    _ = f.pressed(uLeft, modifiers: 0, at: 3.5)
+    check(f.repeated() == key(uLeft, true, 0), "holding ← repeats")
+    check(f.pressed(uS, modifiers: 0, at: 3.6) == .text && f.repeated() == nil && !f.isRepeating,
+          "pressing a text-system key while ← is held stops ← from repeating")
+    _ = f.released(uLeft)
 
     // Repeated ⌥← through the Mac model and KeyUpCheck, including with the Mac's own ⌥ held.
     let seq = [key(uLOpt, true, option), key(uLeft, true, option), key(uLeft, true, option),
