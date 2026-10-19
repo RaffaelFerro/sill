@@ -100,8 +100,22 @@ enum KeyChord {
 /// keyboard would leave them, so a Mac from before 2026-09-27, which posts each key's flags as they
 /// come, is left with nothing this device does not hold there.
 struct ForwardedKeys {
+    /// Initial delay and interval when a forwarded key or modified key chord (⌥←, ⌘→, ←) is held
+    /// down on a hardware keyboard (#162: UIKit's text system repeats plain characters, while
+    /// forwarded keys go through pressesBegan once).
+    static let repeatDelay: TimeInterval = 0.4
+    static let repeatInterval: TimeInterval = 0.05
+
+    struct Repeating: Equatable {
+        let usage: UInt16
+        let modifiers: UInt64
+    }
+
     /// The keys whose down went to the Mac and whose up has not, in the order they went down.
     private(set) var down: [UInt16] = []
+    /// The non-modifier key currently held down for key repeat, with the modifiers its down carried.
+    private(set) var repeating: Repeating?
+    var isRepeating: Bool { repeating != nil }
     /// When a key command last sent each key (`commanded`; systemUptime, as UIPress timestamps are),
     /// so the press of the same key that UIKit may hand pressesBegan after it is known for the same
     /// key press.
@@ -134,6 +148,7 @@ struct ForwardedKeys {
         guard Self.goesAsKey(usage, modifiers: modifiers) else { return nil }
         if !down.contains(usage) { down.append(usage) }
         let isModifier = KeyModifiers.flag(forKey: usage) != nil
+        repeating = (!isModifier && usage != 0x29) ? Repeating(usage: usage, modifiers: modifiers | held) : nil
         return .key(hidUsage: usage, down: true, modifiers: isModifier ? held : modifiers)
     }
 
@@ -141,9 +156,16 @@ struct ForwardedKeys {
     /// its up, when its down went to the Mac, with the modifier keys still down there; nil when the
     /// text system had it.
     mutating func ended(_ usage: UInt16) -> InputEvent? {
+        defer { if repeating?.usage == usage || KeyModifiers.flag(forKey: usage) != nil { repeating = nil } }
         guard let i = down.firstIndex(of: usage) else { return nil }
         down.remove(at: i)
         return .key(hidUsage: usage, down: false, modifiers: held)
+    }
+
+    /// The repeat event while the last pressed non-modifier key remains held down; nil otherwise.
+    func repeated() -> InputEvent? {
+        guard let r = repeating, down.contains(r.usage) else { return nil }
+        return .key(hidUsage: r.usage, down: true, modifiers: r.modifiers)
     }
 
     /// Every key still down on the Mac going up, the last pressed first, each with the modifier keys
@@ -153,6 +175,7 @@ struct ForwardedKeys {
         var ups: [InputEvent] = []
         while let usage = down.last, let up = ended(usage) { ups.append(up) }
         swallowed.removeAll()
+        repeating = nil
         return ups
     }
 

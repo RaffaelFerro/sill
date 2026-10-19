@@ -155,6 +155,17 @@ MUTANTS = [
     ("a swallowed press's up swallowed for ever", CHORDS, "if swallowed.remove(usage) != nil { return .swallow }",
      "if swallowed.contains(usage) { return .swallow }"),
     ("letting go of the keys keeps swallowed presses", CHORDS, "        swallowed.removeAll()\n", ""),
+    ("a held key never repeats (#162)", CHORDS, "        repeating = (!isModifier && usage != 0x29) ? Repeating(usage: usage, modifiers: modifiers | held) : nil\n", ""),
+    ("a modifier key repeats on its own", CHORDS, "(!isModifier && usage != 0x29)", "usage != 0x29"),
+    ("Esc repeats while held", CHORDS, "(!isModifier && usage != 0x29)", "!isModifier"),
+    ("a repeat drops its modifiers", CHORDS, "return .key(hidUsage: r.usage, down: true, modifiers: r.modifiers)",
+     "return .key(hidUsage: r.usage, down: true, modifiers: 0)"),
+    ("releasing a modifier keeps the chord repeating", CHORDS,
+     "defer { if repeating?.usage == usage || KeyModifiers.flag(forKey: usage) != nil { repeating = nil } }",
+     "defer { if repeating?.usage == usage { repeating = nil } }"),
+    ("a repeat down forgets the Mac's own held modifier", STROKES,
+     "let outside = downs[stroke.virtualKey]?.outside ?? (table & ~posted & ~unreadFlags & Self.modifiers)",
+     "let outside = table & ~posted & ~unreadFlags & Self.modifiers"),
 ]
 caught = 0
 for name, rel, old, new in MUTANTS:
