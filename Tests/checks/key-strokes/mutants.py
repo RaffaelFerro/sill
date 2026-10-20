@@ -155,6 +155,9 @@ MUTANTS = [
     ("a swallowed press's up swallowed for ever", CHORDS, "if swallowed.remove(usage) != nil { return .swallow }",
      "if swallowed.contains(usage) { return .swallow }"),
     ("letting go of the keys keeps swallowed presses", CHORDS, "        swallowed.removeAll()\n", ""),
+    # Shifted return and tab
+    ("shifted return and tab to the text system (the shift lost)", CHORDS, "            || (shiftedKeyUsages.contains(usage) && modifiers & KeyModifiers.shift.rawValue != 0)\n", ""),
+    ("return and tab as keys whatever is held", CHORDS, "(shiftedKeyUsages.contains(usage) && modifiers & KeyModifiers.shift.rawValue != 0)", "shiftedKeyUsages.contains(usage)"),
     ("a held key never repeats (#162)", CHORDS, "        if !isModifier, usage != 0x29 { repeating = Repeating(usage: usage, modifiers: modifiers | held) }\n", ""),
     ("a text-system key does not stop an arrow repeat", CHORDS, "        repeating = nil\n        guard Self.goesAsKey(usage, modifiers: modifiers) else { return nil }", "        guard Self.goesAsKey(usage, modifiers: modifiers) else { return nil }\n        repeating = nil"),
     ("a modifier key repeats on its own", CHORDS, "if !isModifier, usage != 0x29", "if usage != 0x29"),
