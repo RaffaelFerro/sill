@@ -5,7 +5,9 @@ WT = sys.argv[1]; HERE = os.path.dirname(os.path.abspath(__file__))
 F = os.path.join(WT, "Sources/SillHost/WindowFollow.swift")
 MUTANTS = [
     ("the first catalog follows", "guard let previous, let topmost, topmost != activeID else { return nil }", "guard let topmost, topmost != activeID else { return nil }\n        let previous = previous ?? []"),
-    ("old windows count as new", "guard !previous.contains(where: { $0.id == topmost }),\n", "guard true,\n"),
+    ("old windows count as new", "guard !seen.contains(topmost), !previous.contains(where: { $0.id == topmost }),\n", "guard true,\n"),
+    ("a window back from the Dock counts as new", "guard !seen.contains(topmost), !previous", "guard !previous"),
+    ("only the earlier catalogs judge newness, not the last", "!seen.contains(topmost), !previous.contains(where: { $0.id == topmost }),", "!seen.contains(topmost),"),
     ("another app's window followed", "guard !app.isEmpty, new.bundleID == app else { return nil }", "guard !app.isEmpty else { return nil }"),
     ("empty bundle IDs match", "guard !app.isEmpty, new.bundleID == app else { return nil }", "guard new.bundleID == app else { return nil }"),
     ("app only from the current catalog", "(current.first { $0.id == activeID } ?? previous.first { $0.id == activeID })?.bundleID", "current.first { $0.id == activeID }?.bundleID"),

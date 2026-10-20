@@ -157,6 +157,9 @@ package final class StreamCoordinator {
     private var pendingLaunch: String?
     /// The catalog as `windowsChanged` last saw it (nil before the first): which windows are new.
     private var lastCatalog: [WindowInfo]?
+    /// Every window ID a catalog has listed since the first device came: a window listed before
+    /// (minimized, hidden, on another Space) is not new when it comes back.
+    private var seenWindows: Set<UInt32> = []
     /// The windows the stream followed away from (WindowFollow), most recent last: where it goes
     /// back to when the window it followed closes. Cleared by any pick from a device.
     private var followStack: [UInt32] = []
@@ -427,6 +430,8 @@ package final class StreamCoordinator {
                 // Nobody is watching: stop capturing and encoding. The next client picks afresh.
                 if count == 0 { self.viewport = nil; self.clientFPS = [:] }   // the next device starts from scratch
                 if count == 0 { self.gestureChords.forget() }                 // and did not open a view it could close
+                // WindowFollow starts afresh with the first device: no catalog from before it counts.
+                if count == 0 || wasEmpty { self.lastCatalog = nil; self.seenWindows = []; self.followStack = [] }
                 // On the software encoder, the hardware is checked only while someone watches.
                 if count == 0 { self.stopRecheck() } else { self.devicesPresent(firstArrived: wasEmpty) }
                 if count > 0 {
@@ -2175,8 +2180,9 @@ package final class StreamCoordinator {
     private func windowsChanged(_ infos: [WindowInfo]) async {
         // The pointer's rectangle follows the catalog: the Desktop's display, a window's bounds.
         defer { pointer.setGeometry(pointerGeometry(), fps: fps) }
-        let previous = lastCatalog
+        let previous = lastCatalog, seen = seenWindows
         lastCatalog = infos
+        seenWindows.formUnion(infos.map(\.id))
         if let pending = pendingLaunch, let w = infos.first(where: { $0.bundleID == pending }) {
             pendingLaunch = nil
             followStack = []
@@ -2188,7 +2194,7 @@ package final class StreamCoordinator {
         // default (`defaults write … followNewWindows -bool NO` turns it off).
         if !virtualDisplay, !switching, case .window(let id) = active,
            UserDefaults.standard.object(forKey: WindowFollow.defaultsKey) as? Bool ?? true,
-           let next = WindowFollow.next(previous: previous, current: infos, activeID: id, topmost: Self.topmostWindow(at: nil)?.id) {
+           let next = WindowFollow.next(previous: previous, seen: seen, current: infos, activeID: id, topmost: Self.topmostWindow(at: nil)?.id) {
             let app = infos.first { $0.id == next }?.appName ?? "?"
             print("Following \(app)'s new window \(next) (from window \(id)).")
             followStack.append(id)

@@ -11,11 +11,14 @@ package enum WindowFollow {
     package static let defaultsKey = "followNewWindows"
 
     /// The window to move the stream to, or nil: the frontmost window on the Mac (`topmost`) when
-    /// it is new since the last catalog (`previous`; nil before the first one, which follows
-    /// nothing), listed now, and of the same app as the window streaming (`activeID`).
-    package static func next(previous: [WindowInfo]?, current: [WindowInfo], activeID: UInt32, topmost: UInt32?) -> UInt32? {
+    /// it is new, listed now, and of the same app as the window streaming (`activeID`). New means
+    /// never listed before in this run of the catalog (`seen`, every window ID an earlier catalog
+    /// listed): a window back from the Dock, from a hidden app or from another Space was listed
+    /// before, so it is not followed. `previous` is the last catalog (nil before the first one,
+    /// which follows nothing).
+    package static func next(previous: [WindowInfo]?, seen: Set<UInt32>, current: [WindowInfo], activeID: UInt32, topmost: UInt32?) -> UInt32? {
         guard let previous, let topmost, topmost != activeID else { return nil }
-        guard !previous.contains(where: { $0.id == topmost }),
+        guard !seen.contains(topmost), !previous.contains(where: { $0.id == topmost }),
               let new = current.first(where: { $0.id == topmost }) else { return nil }
         let app = (current.first { $0.id == activeID } ?? previous.first { $0.id == activeID })?.bundleID ?? ""
         guard !app.isEmpty, new.bundleID == app else { return nil }

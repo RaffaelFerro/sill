@@ -14,23 +14,30 @@ let before = [claude, safari, iterm]
 
 // A new window of the streamed app, in front: followed.
 let update = w(11, "Claude")
-check(WindowFollow.next(previous: before, current: before + [update], activeID: 10, topmost: 11) == 11, "Claude's new dialog in front: followed")
+check(WindowFollow.next(previous: before, seen: [], current: before + [update], activeID: 10, topmost: 11) == 11, "Claude's new dialog in front: followed")
 let iterm2 = w(31, "iTerm")
-check(WindowFollow.next(previous: before, current: [iterm2] + before, activeID: 30, topmost: 31) == 31, "iTerm's new window in front: followed")
+check(WindowFollow.next(previous: before, seen: [], current: [iterm2] + before, activeID: 30, topmost: 31) == 31, "iTerm's new window in front: followed")
 // Not followed:
-check(WindowFollow.next(previous: nil, current: before + [update], activeID: 10, topmost: 11) == nil, "the first catalog follows nothing")
-check(WindowFollow.next(previous: before, current: before + [update], activeID: 10, topmost: 10) == nil, "the streamed window itself in front")
-check(WindowFollow.next(previous: before, current: before + [update], activeID: 10, topmost: nil) == nil, "nothing known in front")
-check(WindowFollow.next(previous: before, current: before + [update], activeID: 10, topmost: 20) == nil, "an older window of another app in front")
-check(WindowFollow.next(previous: before + [update], current: before + [update], activeID: 10, topmost: 11) == nil, "a window that was already there (not new)")
+check(WindowFollow.next(previous: nil, seen: [], current: before + [update], activeID: 10, topmost: 11) == nil, "the first catalog follows nothing")
+check(WindowFollow.next(previous: before, seen: [], current: before + [update], activeID: 10, topmost: 10) == nil, "the streamed window itself in front")
+check(WindowFollow.next(previous: before, seen: [], current: before + [update], activeID: 10, topmost: nil) == nil, "nothing known in front")
+check(WindowFollow.next(previous: before, seen: [], current: before + [update], activeID: 10, topmost: 20) == nil, "an older window of another app in front")
+check(WindowFollow.next(previous: before + [update], seen: [], current: before + [update], activeID: 10, topmost: 11) == nil, "a window that was already there (not new)")
 let newSafari = w(21, "Safari")
-check(WindowFollow.next(previous: before, current: before + [newSafari], activeID: 10, topmost: 21) == nil, "another app's new window in front")
-check(WindowFollow.next(previous: before, current: before, activeID: 10, topmost: 11) == nil, "a window in front that the catalog does not list (too small, Sill's own)")
-check(WindowFollow.next(previous: before, current: before + [update], activeID: 99, topmost: 11) == nil, "the streamed window unknown to both catalogs")
+check(WindowFollow.next(previous: before, seen: [], current: before + [newSafari], activeID: 10, topmost: 21) == nil, "another app's new window in front")
+check(WindowFollow.next(previous: before, seen: [], current: before, activeID: 10, topmost: 11) == nil, "a window in front that the catalog does not list (too small, Sill's own)")
+check(WindowFollow.next(previous: before, seen: [], current: before + [update], activeID: 99, topmost: 11) == nil, "the streamed window unknown to both catalogs")
 let noBundle = w(40, ""), noBundle2 = w(41, "")
-check(WindowFollow.next(previous: [noBundle], current: [noBundle, noBundle2], activeID: 40, topmost: 41) == nil, "no bundle ID: never treated as the same app")
+check(WindowFollow.next(previous: [noBundle], seen: [], current: [noBundle, noBundle2], activeID: 40, topmost: 41) == nil, "no bundle ID: never treated as the same app")
 // The streamed window closing in the same poll the new one appears: same app by the previous catalog.
-check(WindowFollow.next(previous: before, current: [update, safari, iterm], activeID: 10, topmost: 11) == 11, "the streamed window gone, its app's new one in front: followed")
+check(WindowFollow.next(previous: before, seen: [], current: [update, safari, iterm], activeID: 10, topmost: 11) == 11, "the streamed window gone, its app's new one in front: followed")
+// A window listed before in this run (minimized, its app hidden, on another Space) is not new when it
+// comes back in front, even though the last catalog did not list it.
+let earlier = w(12, "Claude")
+check(WindowFollow.next(previous: before, seen: [10, 12, 20, 30], current: before + [earlier], activeID: 10, topmost: 12) == nil,
+      "a window back from the Dock or another Space: not followed")
+check(WindowFollow.next(previous: before, seen: [10, 20, 30], current: before + [earlier], activeID: 10, topmost: 12) == 12,
+      "a window never listed before: followed")
 
 // Going back.
 check(WindowFollow.back([], current: before) == nil, "nothing followed: nowhere to go back to")
