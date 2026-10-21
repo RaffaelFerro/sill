@@ -3,6 +3,9 @@
 xcuserdata/
 *.xcuserstate
 DerivedData/
+# Built apps and archives, wherever they are saved (release.sh and release-ios.sh write into .build).
+*.ipa
+*.xcarchive
 .DS_Store
 
 # Signing and notary keys, certificates exported with their keys, provisioning profiles and

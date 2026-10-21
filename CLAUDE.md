@@ -31,7 +31,7 @@ held upright (iPad and sideways as on main, but for Aa's Auto and the strip's st
   github.com/RaffaelFerro/sill-plus (source.json for AltStore, SideStore, Feather); the IPA is made with
   build-setting overrides (bundle ID, display name), the project keeps `me.saffer.sill`.
 - Building: Xcode 27.1 (DuoPostureReader needs the iOS 27.1 SDK). Signing for Raffael's own iPhone on
-  his Personal Team (YGRR72S4YT) goes as overrides on the command line, never into the project
+  his Personal Team goes as overrides on the command line, never into the project
   (Xcode's Signing editor moves Info.plist keys into build settings: revert both).
 - Checks: phone-portrait 502 and 83 of 83 mutants, picture-zoom 64 and 25 of 25, tour 84 of 84,
   pointer-presence 43 of 43. Tested by Raffael on an iPhone 12 Pro (Release). Not done: a vertical
