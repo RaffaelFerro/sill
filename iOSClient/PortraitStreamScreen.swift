@@ -140,6 +140,9 @@ struct PortraitStreamScreen: View {
     @ObservedObject var client: StreamClient
     var metrics: PortraitMetrics = .regular
     @Binding var drawerOpen: Bool
+    /// The phone's Shortcuts drawer, which row 1's Shortcuts button opens (Desktop's old place: the
+    /// Desktop is the strip's first tile).
+    @Binding var shortcutsOpen: Bool
     @Binding var keyboardShown: Bool
     @Binding var textScale: Double?
     @Binding var scaleOpen: Bool
@@ -342,15 +345,25 @@ struct PortraitStreamScreen: View {
             // past row 1's leading edge; the strip goes while either is open, so nothing cut shows
             // beside them.
             PhoneRows(size: layout.size, rects: rects) {
-                picturePane(measured: false).accessibilityHidden(drawerOpen)
+                picturePane(measured: false).accessibilityHidden(drawerOpen || shortcutsOpen)
                 phoneRow1(layout, menus: larger && client.menus.hasMenus)
                 if !larger {
                     phoneRow2(layout)
-                        .opacity(drawerOpen || settingsOpen ? 0 : 1)
-                        .accessibilityHidden(drawerOpen)
+                        .opacity(drawerOpen || shortcutsOpen || settingsOpen ? 0 : 1)
+                        .accessibilityHidden(drawerOpen || shortcutsOpen)
                 }
-                keyRow(.phone).accessibilityHidden(drawerOpen)
-                trackpad(verticalSpan: span).accessibilityHidden(drawerOpen)
+                keyRow(.phone).accessibilityHidden(drawerOpen || shortcutsOpen)
+                trackpad(verticalSpan: span).accessibilityHidden(drawerOpen || shortcutsOpen)
+            }
+
+            if shortcutsOpen {
+                ForEach(layout.dim.indices, id: \.self) { index in
+                    shortcutsDim.placed(layout.dim[index], in: layout.size)
+                }
+                ShortcutsDrawer(client: client, open: $shortcutsOpen, showsDesktop: larger)
+                    .modifier(AfterRow1(active: larger))
+                    .placed(layout.drawer, in: layout.size)
+                    .transition(.opacity)
             }
 
             if drawerOpen {
@@ -416,7 +429,7 @@ struct PortraitStreamScreen: View {
                 .allowsHitTesting(!scaleOpen)
                 .tourTarget(.keyboard)
 
-            desktopButton(width: width)
+            shortcutsButton(width: width)
                 .opacity(scaleOpen ? 0 : 1)
                 .allowsHitTesting(!scaleOpen)
 
@@ -537,8 +550,27 @@ struct PortraitStreamScreen: View {
                   accessibilityLabel: drawerOpen ? "Close the app list" : "Open the app list",
                   action: {
                       setSettings(false, false)
-                      withAnimation(.easeOut(duration: 0.18)) { drawerOpen.toggle() }
+                      withAnimation(.easeOut(duration: 0.18)) { shortcutsOpen = false; drawerOpen.toggle() }
                   })
+    }
+
+    /// A phone's row 1, in Desktop's old place: the Shortcuts drawer.
+    private func shortcutsButton(width: CGFloat? = nil) -> some View {
+        barButton(open: shortcutsOpen, symbol: "square.grid.2x2", label: "Shortcuts", width: width,
+                  accessibilityLabel: shortcutsOpen ? "Close shortcuts" : "Open shortcuts",
+                  action: {
+                      setSettings(false, false)
+                      withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen.toggle() }
+                  })
+    }
+
+    /// The Shortcuts drawer's dim: a tap on it closes the drawer instead of clicking the Mac.
+    private var shortcutsDim: some View {
+        Color.black.opacity(0.58)
+            .contentShape(Rectangle())
+            .onTapGesture { withAnimation(.easeOut(duration: 0.18)) { shortcutsOpen = false } }
+            .accessibilityHidden(true)
+            .transition(.opacity)
     }
 
     private func desktopButton(width: CGFloat? = nil) -> some View {

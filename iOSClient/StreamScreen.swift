@@ -103,6 +103,8 @@ enum DuoLayout {
 struct StreamScreen: View {
     @ObservedObject var client: StreamClient
     @State private var drawerOpen = false
+    /// The phone's Shortcuts drawer (row 1's Shortcuts button, `ShortcutsDrawer`).
+    @State private var shortcutsOpen = false
     @State private var keyboardShown = false
     /// Modifiers held down by the portrait key row until the next key, character or click uses
     /// them. Lives up here so rotating the iPad does not drop a half-typed shortcut.
@@ -436,7 +438,7 @@ struct StreamScreen: View {
 
     /// Nothing open over the stream: the Settings panel (which has the callout), the drawer, the
     /// pairing overlay, the first-run tour (its dim and card; VoiceOver is on its card meanwhile).
-    private var linkLineAllowed: Bool { !settingsOpen && !drawerOpen && !overlayShown && !tourOnScreen }
+    private var linkLineAllowed: Bool { !settingsOpen && !drawerOpen && !shortcutsOpen && !overlayShown && !tourOnScreen }
 
     /// The clipboard's chip shows where the link's line may, and not over a thumbnail's lights or the
     /// Aa ruler either (the Settings panel has its own Paste).
@@ -688,7 +690,7 @@ struct StreamScreen: View {
         if settingsOpen { takers.insert(.settings) }
         if overlayShown { takers.insert(.pairing) }
         if tour != nil { takers.insert(.tour) }
-        if drawerOpen { takers.insert(.drawer) }
+        if drawerOpen || shortcutsOpen { takers.insert(.drawer) }
         if menusOpen { takers.insert(.menus) }
         return takers
     }
@@ -720,7 +722,7 @@ struct StreamScreen: View {
 
     private func putAwayForOverlay() {
         setSettings(false, restoreKeyboard: false)
-        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen = false }
         windowMenu = nil
         scaleOpen = false
         overlay.setKeyboard(shown: false)
@@ -743,7 +745,7 @@ struct StreamScreen: View {
     private func setSettings(_ open: Bool, restoreKeyboard: Bool = true) {
         guard open != settingsOpen else { return }
         if open {
-            withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+            withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen = false }
             windowMenu = nil
             scaleOpen = false
             keyboardBeforeSettings = keyboardShown
@@ -774,7 +776,7 @@ struct StreamScreen: View {
         #endif
         setSettings(false, restoreKeyboard: false)
         windowMenu = nil
-        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen = false }
         menusOpen = true
     }
 
@@ -816,6 +818,7 @@ struct StreamScreen: View {
     /// What is open at the decision, if anything (the rule's `busy`), in the console's words.
     private var tourBusy: String? {
         if drawerOpen { return "the Apps list was open" }
+        if shortcutsOpen { return "the Shortcuts drawer was open" }
         if settingsOpen { return "Settings was open" }
         if windowMenu != nil { return "a window's lights were open" }
         if scaleOpen { return "the Aa ruler was open" }
@@ -1098,6 +1101,7 @@ struct StreamScreen: View {
     /// `largerKeyboard`: Larger Picture's keyboard on a phone (see `body`), nil otherwise.
     private func portrait(metrics: PortraitMetrics, largerKeyboard: CGFloat? = nil) -> some View {
         PortraitStreamScreen(client: client, metrics: metrics, drawerOpen: $drawerOpen,
+                             shortcutsOpen: $shortcutsOpen,
                              keyboardShown: $keyboardShown,
                              textScale: $textScale, scaleOpen: $scaleOpen, windowMenu: $windowMenu,
                              latched: $latched, overlay: overlay,
