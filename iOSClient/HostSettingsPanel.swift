@@ -68,6 +68,8 @@ struct HostSettingsPanel: View {
     @AppStorage(InputOverlayView.leftOptionAsCommandKey) private var leftOptionAsCommand = false
     /// How fast the pointer moves on the on-screen trackpad (`TrackpadSpeed`), never sent.
     @AppStorage(TrackpadSpeed.defaultsKey) private var trackpadSpeedRaw = TrackpadSpeed.normal.rawValue
+    /// This device's switch for controlling Mac volume with the hardware volume buttons (issue #127).
+    @AppStorage(VolumeButtonChord.key) private var volumeButtonsOn = false
     /// VoiceOver is on: it keeps three-finger swipes and taps for itself, so the This iPad group says
     /// its rows do the gestures instead.
     @State private var voiceOver = HostSettingsPanel.voiceOverRunning
@@ -614,6 +616,14 @@ struct HostSettingsPanel: View {
             }
         }
         Footnote(text: TrackpadSpeed.footnote)
+        Rows {
+            Toggle(isOn: $volumeButtonsOn) {
+                Text(VolumeButtonChord.Copy.toggleTitle).foregroundStyle(Palette.text)
+            }
+            .rowFrame()
+            .onChange(of: volumeButtonsOn) { _, _ in client.updateVolumeButtonObserver() }
+        }
+        Footnote(text: VolumeButtonChord.Copy.footnote(mac: mac, device: device))
     }
 
     /// The Mac's window list said it takes the gestures (`WindowList.gestures`).
