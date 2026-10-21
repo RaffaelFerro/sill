@@ -1114,7 +1114,7 @@ private struct KeyRow: View {
 }
 
 /// Full Screen's state, owned by `StreamScreen`: the input mode, whether the controls show, the
-/// screen's insets (the picture runs under them, the controls and panels keep clear), and the way out.
+/// screen's insets (the picture, the controls and the panels keep clear of them), and the way out.
 struct FullScreenControls {
     var trackpad: Binding<Bool>
     var expanded: Binding<Bool>

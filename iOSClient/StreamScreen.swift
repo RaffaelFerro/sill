@@ -335,7 +335,7 @@ struct StreamScreen: View {
             // display gives the picture the status bar's strip in every pose.
             .duoFold(posture, size: geo.size, screen: "stream screen")
             .duoStatusBar(posture, size: geo.size)
-            // Full Screen: no status bar, the home indicator dimmed, the Desktop filling it if chosen.
+            // Full Screen: the home indicator dimmed, and the Desktop filling the picture if chosen.
             .persistentSystemOverlays(fullScreenOn(layout, posture) ? .hidden : .automatic)
             .onChange(of: fullScreenOn(layout, posture), initial: true) { _, on in fullScreenShown = on }
             .onChange(of: fullScreenOn(layout, posture) && fullScreenDesktop == "fill" && client.active == .desktop,
@@ -1162,7 +1162,8 @@ struct StreamScreen: View {
                            exit: { withAnimation(.easeOut(duration: 0.2)) { fullScreen = false } })
     }
 
-    /// The key window's safe-area insets: Full Screen's picture runs under them, its controls do not.
+    /// The key window's safe-area insets: Full Screen's picture starts under the top one (the status
+    /// bar and the notch), its controls keep above the bottom one.
     private static var windowInsets: UIEdgeInsets {
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows).first { $0.isKeyWindow }?.safeAreaInsets ?? .zero
