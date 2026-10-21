@@ -11,6 +11,12 @@ func near(_ a: CGRect, _ b: CGRect) -> Bool {
     near(a.minX, b.minX) && near(a.minY, b.minY) && near(a.width, b.width) && near(a.height, b.height)
 }
 let Z = PictureZoom.zoomedRect
+/// What HEVCDisplayView.videoRect gives: `video` fitted in `bounds`, centred.
+func HEVCRect(video: CGSize, in bounds: CGRect) -> CGRect {
+    let k = min(bounds.width / video.width, bounds.height / video.height)
+    let w = video.width * k, h = video.height * k
+    return CGRect(x: bounds.minX + (bounds.width - w) / 2, y: bounds.minY + (bounds.height - h) / 2, width: w, height: h)
+}
 
 // An iPhone 17 Pro's pane, 386×241, a 16:10 frame filling it.
 let pane = CGRect(x: 0, y: 0, width: 386, height: 241)
@@ -165,6 +171,19 @@ slow.withdrawn()
 slow.follow(CGPoint(x: 0.4, y: 0.4))
 check("a touch lost as the old arrangement goes holds nothing", slow.focus == CGPoint(x: 0.4, y: 0.4))
 
+// MARK: Full Screen draws the frame against the top
+
+let top = PictureZoom()
+top.touchFollowDelay = 0
+top.offered()
+let room = CGRect(x: 0, y: 0, width: 390, height: 600)
+let short = HEVCRect(video: CGSize(width: 1600, height: 1000), in: room)
+check("not aligned: a short frame in the room's middle", near(top.rect(video: short, bounds: room).midY, 300))
+top.alignTop = true
+check("aligned: against the room's top", near(top.rect(video: short, bounds: room).minY, 0))
+top.scale = 2
+check("aligned and zoomed past the room: the zoom's own rule", top.rect(video: short, bounds: room).height > 600 || near(top.rect(video: short, bounds: room).minY, 0))
+
 // MARK: Aa's Auto
 
 check("auto: a window the size asked fits", AutoFit.fits(window: CGSize(width: 390, height: 650), room: CGSize(width: 390, height: 650), scale: 1))
@@ -177,7 +196,30 @@ check("auto: smaller than asked fits (no black at its sides is Sill's)", AutoFit
 check("auto: 1, then 0.75, then 0.5, then none", AutoFit.steps.first == 1 && AutoFit.next(after: 1) == 0.75 && AutoFit.next(after: 0.75) == 0.5 && AutoFit.next(after: 0.5) == nil)
 check("auto: no room, nothing to judge", AutoFit.fits(window: CGSize(width: 900, height: 900), room: .zero, scale: 1))
 
-// MARK: The zoom of each source
+// MARK: Fill and the zoom of each source
+
+check("fill: a 16:10 frame in a tall screen grows to its height",
+      near(PictureZoom.fillScale(video: CGRect(x: 0, y: 300, width: 390, height: 243.75),
+                                 bounds: CGRect(x: 0, y: 0, width: 390, height: 844)), 844 / 243.75))
+check("fill: a frame that already covers needs nothing", PictureZoom.fillScale(video: full, bounds: pane) == 1)
+check("fill: no frame, nothing", PictureZoom.fillScale(video: .zero, bounds: pane) == 1)
+
+let tall = CGRect(x: 0, y: 0, width: 390, height: 844)
+let tallVideo = CGRect(x: 0, y: 300.125, width: 390, height: 243.75)
+let filled = PictureZoom()
+filled.touchFollowDelay = 0
+filled.offered()
+_ = filled.rect(video: tallVideo, bounds: tall)
+check("fill off: nothing grows", filled.effectiveScale == 1)
+filled.fill = true
+let f = filled.rect(video: tallVideo, bounds: tall)
+check("fill on: the frame as tall as the screen", near(f.height, 844, 0.01) && near(f.minY, 0, 0.01))
+check("fill on: the trackpad slows by it", near(filled.effectiveScale, 844 / 243.75))
+filled.scale = 2
+_ = filled.rect(video: tallVideo, bounds: tall)
+check("fill and a zoom: the two multiply", near(filled.effectiveScale, 2 * 844 / 243.75))
+filled.withdrawn()
+check("fill where it is not offered: nothing", filled.effectiveScale == 1)
 
 let perSource = PictureZoom()
 perSource.touchFollowDelay = 0

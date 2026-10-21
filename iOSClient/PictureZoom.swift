@@ -28,10 +28,19 @@ final class PictureZoom: ObservableObject {
     private var offering = 0 { didSet { allowed = offering > 0 } }
     func offered() { offering += 1; settleTouches() }
     func withdrawn() { offering = max(0, offering - 1); settleTouches() }
-    /// The scale that applies now.
+    /// Full Screen's Fill for the Desktop: the frame magnified until it covers the whole picture
+    /// (its height, on a phone held upright), the zoom chosen on top of that, the pointer still held in
+    /// the middle. Off, the frame fits as it always has.
+    var fill = false { didSet { if fill != oldValue { changed(animated: false) } } }
+    /// The frame drawn against the picture's top rather than in its middle (Full Screen: what a window
+    /// the Mac could not fit leaves over goes by the controls, never above the picture).
+    var alignTop = false { didSet { if alignTop != oldValue { changed(animated: false) } } }
+    /// Fill's own magnification, as the last `rect` found it (1 when the frame already covers it).
+    private var fillScale: CGFloat = 1
+    /// The scale that applies now: Fill's, times the zoom chosen.
     var effectiveScale: CGFloat {
         guard allowed else { return 1 }
-        return scale > 1 ? CGFloat(scale) : 1
+        return (fill ? fillScale : 1) * (scale > 1 ? CGFloat(scale) : 1)
     }
 
     /// The zoom each source had (`source`): a window keeps its own, the Desktop its own.
@@ -128,7 +137,17 @@ final class PictureZoom: ObservableObject {
 
     /// Where the whole frame is drawn now, for a frame drawn at `video` (aspect-fit) inside `bounds`.
     func rect(video: CGRect, bounds: CGRect) -> CGRect {
-        Self.zoomedRect(video: video, bounds: bounds, scale: effectiveScale, focus: focus)
+        fillScale = Self.fillScale(video: video, bounds: bounds)
+        var drawn = Self.zoomedRect(video: video, bounds: bounds, scale: effectiveScale, focus: focus)
+        if alignTop, drawn.height < bounds.height { drawn.origin.y = bounds.minY }
+        return drawn
+    }
+
+    /// Pure: how many times the frame drawn at `video` must grow to cover `bounds` both ways; 1 when
+    /// it already does, or there is no frame.
+    static func fillScale(video: CGRect, bounds: CGRect) -> CGFloat {
+        guard video.width > 0, video.height > 0 else { return 1 }
+        return max(1, bounds.width / video.width, bounds.height / video.height)
     }
 
     private func changed(animated: Bool) {

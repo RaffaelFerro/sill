@@ -115,10 +115,6 @@ struct StreamScreen: View {
     /// been asked to fit (the control shows 1× for it). Up here, like `latched`, so it survives
     /// rotation and both layouts share it.
     @State private var textScale: Double? = nil
-    /// Aa's Auto (`AutoFit`): the scale that fit each window in each room ("id@W×H"), once found.
-    @State private var autoScales: [String: Double] = [:]
-    /// The check that follows a viewport sent under Auto: whether the Mac's app took the window whole.
-    @State private var autoCheck: Task<Void, Never>?
     /// The Aa slider is unfolded (finger down): the bars fade their other buttons meanwhile.
     @State private var scaleOpen = false
     /// The thumbnail whose traffic-light submenu is open (held for 1.5 s). The bars clip their
@@ -179,6 +175,24 @@ struct StreamScreen: View {
     /// This device's Larger Picture switch (the Settings panel's This iPhone; docs/larger-picture-plan.md).
     /// It acts only while a window streams (`largerPictureNow`).
     @AppStorage(StreamClient.largerPictureKey) private var largerPicture = false
+    /// Full Screen on a phone held upright (`FullScreenLayout`), and its input mode, and how the
+    /// Desktop shows there ("fill": the frame covers the screen and follows the pointer; "fit": whole).
+    @AppStorage(StreamClient.fullScreenKey) private var fullScreen = false
+    @AppStorage("Sill.fullScreenTrackpad") private var fullScreenTrackpad = false
+    @AppStorage(StreamClient.fullScreenDesktopKey) private var fullScreenDesktop = "fill"
+    /// Full Screen's controls showing (row 1 and the key row), or only its handle.
+    @State private var fullScreenExpanded = true
+    /// Full Screen's switch as it was when the Settings panel opened: the arrangement holds still under
+    /// the panel, and a change applies as it closes (as Larger Picture's does).
+    @State private var fullScreenHeld: Bool? = nil
+    /// Full Screen in effect now, as the body last found it (the tour's rule reads it).
+    @State private var fullScreenShown = false
+    /// Aa's Auto (`AutoFit`): the scale that fit each window in each room ("id@W×H"), once found.
+    @State private var autoScales: [String: Double] = [:]
+    /// The check that follows a viewport sent under Auto: whether the Mac's app took the window whole.
+    @State private var autoCheck: Task<Void, Never>?
+    /// The screen stays awake while a session shows (Settings › This iPhone).
+    @AppStorage(StreamClient.keepScreenOnKey) private var keepScreenOn = false
     /// Larger Picture as it was in effect when the Settings panel opened (`largerPictureNow`), which
     /// the arrangement keeps until the panel closes; nil while it is closed. The panel hangs under row
     /// 1, which the arrangement moves by the picture's growth (157 pt on an 18 Pro Max), so a change
@@ -250,7 +264,9 @@ struct StreamScreen: View {
                     case .innerPortrait:
                         portrait(metrics: .regular)
                     case .outerPortrait:
-                        portrait(metrics: DuoLayout.phoneArrangement ? .phone : .compact, largerKeyboard: largerKeyboard)
+                        portrait(metrics: DuoLayout.phoneArrangement ? .phone : .compact, largerKeyboard: largerKeyboard,
+                                 fullScreen: fullScreenOn(layout, posture) ? fullScreenControls : nil)
+                            .ignoresSafeArea(edges: fullScreenOn(layout, posture) ? .all : [])
                     }
                 }
                 // Under the pairing overlay and the tour nothing takes a touch: not the bar, and
@@ -319,6 +335,11 @@ struct StreamScreen: View {
             // display gives the picture the status bar's strip in every pose.
             .duoFold(posture, size: geo.size, screen: "stream screen")
             .duoStatusBar(posture, size: geo.size)
+            // Full Screen: the home indicator dimmed, and the Desktop filling the picture if chosen.
+            .persistentSystemOverlays(fullScreenOn(layout, posture) ? .hidden : .automatic)
+            .onChange(of: fullScreenOn(layout, posture), initial: true) { _, on in fullScreenShown = on }
+            .onChange(of: fullScreenOn(layout, posture) && fullScreenDesktop == "fill" && client.active == .desktop,
+                      initial: true) { _, fill in client.zoom.fill = fill }
             .environment(\.largerPictureOffered, offersLarger)
             #if DEBUG
             // The console's line for the gates: what Larger Picture's rule made of the switch and of
@@ -360,6 +381,9 @@ struct StreamScreen: View {
         .onChange(of: scaleOpen) { _, open in if open { setSettings(false) } }
         .onChange(of: windowMenu) { _, menu in if menu != nil { setSettings(false) } }
         .ignoresSafeArea(edges: .bottom)
+        // Keep Screen On: no auto-lock while the stream screen shows.
+        .onChange(of: keepScreenOn, initial: true) { _, on in UIApplication.shared.isIdleTimerDisabled = on }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .onAppear {
             // A fresh connection starts on the Desktop (the client asks for it as soon as the host
             // reports nothing streaming), so the drawer stays closed until the user opens it.
@@ -391,6 +415,7 @@ struct StreamScreen: View {
         .onChange(of: keyboardTakers, initial: true) { _, takers in overlay.update(takers: takers) }
         // Rotation animates, and a Mac window resize restarts the stream, so let the size settle.
         .onChange(of: panelSize) { _, _ in sendViewport(after: 0.25) }
+        .onChange(of: fullScreenShown) { _, _ in sendViewport(after: 0.25) }
         // Same wait for Aa: cycling from Off to 0.8× passes three sizes nobody wants the Mac to try.
         .onChange(of: textScale) { _, _ in sendViewport(after: 0.25) }
         // The stream rate follows the panel (`StreamClient.wantedFPS`): re-send when Low Power Mode
@@ -758,6 +783,7 @@ struct StreamScreen: View {
             // panel never moves under the finger: a change of the switch, or of what streams,
             // applies as the panel goes.
             largerPictureHeld = open ? largerPictureNow : nil
+            fullScreenHeld = open ? fullScreen : nil
         }
         if !open {
             if restoreKeyboard, keyboardBeforeSettings { overlay.setKeyboard(shown: true) }
@@ -819,6 +845,7 @@ struct StreamScreen: View {
     private var tourBusy: String? {
         if drawerOpen { return "the Apps list was open" }
         if shortcutsOpen { return "the Shortcuts drawer was open" }
+        if fullScreenShown { return "Full Screen was on" }
         if settingsOpen { return "Settings was open" }
         if windowMenu != nil { return "a window's lights were open" }
         if scaleOpen { return "the Aa ruler was open" }
@@ -1024,6 +1051,8 @@ struct StreamScreen: View {
     /// Settings › Take the Tour: the panel closes without putting the keyboard back (the tour does,
     /// at its end, if it was up before the panel opened), then every step of the layout on screen.
     private func takeTour() {
+        // The tour's cards point at the usual arrangement's rows: Full Screen goes first.
+        fullScreen = false
         let keyboard = keyboardBeforeSettings
         setSettings(false, restoreKeyboard: false)
         tourLog("Take the Tour")
@@ -1099,7 +1128,8 @@ struct StreamScreen: View {
     }
 
     /// `largerKeyboard`: Larger Picture's keyboard on a phone (see `body`), nil otherwise.
-    private func portrait(metrics: PortraitMetrics, largerKeyboard: CGFloat? = nil) -> some View {
+    private func portrait(metrics: PortraitMetrics, largerKeyboard: CGFloat? = nil,
+                          fullScreen: FullScreenControls? = nil) -> some View {
         PortraitStreamScreen(client: client, metrics: metrics, drawerOpen: $drawerOpen,
                              shortcutsOpen: $shortcutsOpen,
                              keyboardShown: $keyboardShown,
@@ -1113,7 +1143,30 @@ struct StreamScreen: View {
                              pairThisDevice: openPairingOverlay,
                              linkLine: shownLinkLine,
                              takeTour: takeTour,
-                             largerKeyboard: largerKeyboard)
+                             largerKeyboard: largerKeyboard,
+                             fullScreen: fullScreen,
+                             enterFullScreen: metrics.phone && duoEnvironment.hinge == .unknown
+                                ? { withAnimation(.easeOut(duration: 0.2)) { self.fullScreen = true } } : nil)
+    }
+
+    /// Full Screen in effect: the switch on (as it was when Settings opened, while it is open), a
+    /// phone held upright, no hinge. Whatever streams, so a window closing (nothing, for a moment,
+    /// until the Desktop) never drops out of it and back, each time with a new viewport.
+    private func fullScreenOn(_ layout: TourLayout, _ posture: DuoPosture) -> Bool {
+        (fullScreenHeld ?? fullScreen) && layout == .phone && DuoLayout.phoneArrangement && posture.hinge == .unknown
+    }
+
+    private var fullScreenControls: FullScreenControls {
+        FullScreenControls(trackpad: $fullScreenTrackpad, expanded: $fullScreenExpanded,
+                           insets: Self.windowInsets,
+                           exit: { withAnimation(.easeOut(duration: 0.2)) { fullScreen = false } })
+    }
+
+    /// The key window's safe-area insets: Full Screen's picture starts under the top one (the status
+    /// bar and the notch), its controls keep above the bottom one.
+    private static var windowInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.safeAreaInsets ?? .zero
     }
 
     private var streamShape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }

@@ -436,6 +436,12 @@ final class StreamClient: ObservableObject {
     /// for none. The strip opens it, the stream screen draws the panel (outside the strip's clip).
     @Published var openStack: String? = nil
 
+    /// Full Screen on a phone held upright, how the Desktop shows in it, and Keep Screen On: this
+    /// device's own settings (StreamScreen, the Settings panel's This iPhone, the Shortcuts drawer).
+    static let fullScreenKey = "Sill.fullScreen"
+    static let fullScreenDesktopKey = "Sill.fullScreenDesktop"
+    static let keepScreenOnKey = "Sill.keepScreenOn"
+
     /// The picture's zoom on this device (a phone's Aa): the display view draws through it, the touch
     /// overlay maps through it, and it follows the pointer the sprite shows. Main thread.
     let zoom = PictureZoom()

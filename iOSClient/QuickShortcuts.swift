@@ -24,12 +24,13 @@ struct QuickShortcut: Codable, Identifiable, Equatable {
 
     /// Sill's own actions.
     enum SillAction: String, Codable, CaseIterable, Identifiable {
-        case desktop, zoom, missionControl, appExpose, showDesktop, spotlight
+        case desktop, zoom, fullScreen, missionControl, appExpose, showDesktop, spotlight
         var id: String { rawValue }
         var title: String {
             switch self {
             case .desktop: return "Desktop"
             case .zoom: return "Zoom"
+            case .fullScreen: return "Full Screen"
             case .missionControl: return "Mission Control"
             case .appExpose: return "App Exposé"
             case .showDesktop: return "Show Desktop"
@@ -40,6 +41,7 @@ struct QuickShortcut: Codable, Identifiable, Equatable {
             switch self {
             case .desktop: return "desktopcomputer"
             case .zoom: return "plus.magnifyingglass"
+            case .fullScreen: return "arrow.up.left.and.arrow.down.right"
             case .missionControl: return "rectangle.3.group"
             case .appExpose: return "rectangle.stack"
             case .showDesktop: return "macwindow.on.rectangle"
@@ -167,6 +169,9 @@ extension StreamClient {
             switch action {
             case .desktop: select(.desktop)
             case .zoom: zoom.toggle()
+            case .fullScreen:
+                let key = StreamClient.fullScreenKey
+                UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
             case .missionControl: sendGesture(.swipeUp, fingers: 3)
             case .appExpose: sendGesture(.swipeDown, fingers: 3)
             case .showDesktop: sendGesture(.spread, fingers: 3)
