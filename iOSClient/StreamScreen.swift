@@ -336,6 +336,15 @@ struct StreamScreen: View {
             }
         }
         .animation(.spring(duration: 0.25, bounce: 0.2), value: windowMenu)
+        .overlayPreferenceValue(StackAnchorKey.self) { anchor in
+            if let anchor, client.openStack == anchor.app {
+                GeometryReader { geo in
+                    // Below the strip when it is in the screen's top third (a landscape bar), else above.
+                    let below = geo[anchor.bounds].midY < geo.size.height / 3
+                    StackPanel(client: client, anchor: anchor, screen: geo.size, below: below)
+                }
+            }
+        }
         .onChange(of: client.pendingLink) { _, link in
             // An outside link while streaming: the panel and the keyboard go first, as for Pair This iPad….
             if link != nil { openLinkOverlay() }
@@ -1722,6 +1731,9 @@ struct WindowStrip: View {
     var pad: CGFloat = 10
     var fade: Double = 0.86
     var badge: CGFloat = 24
+    /// The Desktop as the strip's first tile, fixed there (a phone's row 2, where row 1 has no
+    /// Desktop button; Raffael, 2026-10-21). It never moves, and windows cannot be dragged before it.
+    var desktopFirst = false
     /// Which thumbnail has its traffic-light submenu open. Owned by the screen root, which draws
     /// the submenu outside this clipped strip.
     @Binding var menuFor: UInt32?
@@ -1736,41 +1748,67 @@ struct WindowStrip: View {
     static func tourBand(pad: CGFloat) -> EdgeInsets {
         EdgeInsets(top: max(0, pad - 5), leading: 0, bottom: max(0, pad - 6), trailing: 0)
     }
-    @State private var lifted: UInt32? = nil
+    /// The item being dragged (`StripItem.id`).
+    @State private var lifted: String? = nil
     @State private var liftOffset: CGFloat = 0
     @State private var liftStartIndex = 0
+    /// The slot the dragging finger last reached.
+    @State private var lastTarget = -1
+
+    /// One thumbnail in the strip: a window, or a stack of one app's windows (Raffael, 2026-10-21:
+    /// one per app). A stack shows its app's window that streams, else its first; a tap opens its
+    /// panel over the strip (`StackPanel`), where a window is chosen.
+    struct StripItem: Identifiable {
+        let id: String
+        let windows: [WindowInfo]
+        let stacked: Bool
+        var front: WindowInfo { windows[0] }
+    }
+
+    /// `windows` (each app's together, `StreamClient.orderedWindows`) as the strip's items: one app's
+    /// several windows a stack.
+    static func items(_ windows: [WindowInfo], active: StreamSource) -> [StripItem] {
+        var runs: [[WindowInfo]] = []
+        for window in windows {
+            if let last = runs.last?.last, last.bundleID == window.bundleID { runs[runs.count - 1].append(window) } else { runs.append([window]) }
+        }
+        return runs.flatMap { run -> [StripItem] in
+            guard run.count > 1 else {
+                return run.map { StripItem(id: "w\($0.id)", windows: [$0], stacked: false) }
+            }
+            var ordered = run
+            if case .window(let id) = active, let i = run.firstIndex(where: { $0.id == id }) { ordered.insert(ordered.remove(at: i), at: 0) }
+            return [StripItem(id: "s" + run[0].bundleID, windows: ordered, stacked: true)]
+        }
+    }
+
+    private var currentItems: [StripItem] {
+        Self.items(client.orderedWindows, active: client.active)
+    }
 
     var body: some View {
-        let windows = client.orderedWindows
+        let items = currentItems
         let slot = width + spacing
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: spacing) {
-                ForEach(Array(windows.enumerated()), id: \.element.id) { index, window in
-                    WindowThumbnail(window: window,
-                                    image: client.thumbnails[window.id],
-                                    icon: client.icons[window.bundleID],
-                                    isActive: client.active == .window(window.id),
-                                    width: width, height: height, radius: radius, badge: badge,
-                                    menuOpen: menuFor == window.id,
-                                    lifted: lifted == window.id,
-                                    onSelect: { client.select(.window(window.id)) },
-                                    onCommand: { client.command($0, window: window.id) },
-                                    onMove: { step in
-                                        client.moveWindow(window.id, to: index + step)
-                                        client.persistWindowOrder()
-                                    })
+                if desktopFirst {
+                    DesktopTile(isActive: client.active == .desktop, width: width, height: height, radius: radius,
+                                onSelect: { if menuFor != nil { closeMenu() } else { pick(.desktop) } })
+                }
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    tile(item, index: index)
                         .overlay {
                             HoldDragOverlay(minimumHold: Self.holdToOpen,
-                                            onTap: { if menuFor != nil { closeMenu() } else { client.select(.window(window.id)) } },
-                                            onHold: { openMenu(for: window.id) },
-                                            onMove: { t in holdMoved(window: window, index: index, count: windows.count, slot: slot, translation: t) },
-                                            onEnd: { holdEnded(window: window) })
+                                            onTap: { tapped(item) },
+                                            onHold: { if !item.stacked { openMenu(for: item.front.id) } },
+                                            onMove: { t in holdMoved(item: item, index: index, count: items.count, slot: slot, translation: t) },
+                                            onEnd: { holdEnded(item: item) })
                         }
-                        .offset(x: lifted == window.id ? liftOffset : 0)
-                        .zIndex(lifted == window.id ? 1 : 0)
+                        .offset(x: lifted == item.id ? liftOffset : 0)
+                        .zIndex(lifted == item.id ? 1 : 0)
                         // The lifted thumbnail follows the finger: its slot change must not animate,
                         // or the layout springs one way while the compensating offset jumps the other.
-                        .transaction { if lifted == window.id { $0.animation = nil } }
+                        .transaction { if lifted == item.id { $0.animation = nil } }
                 }
             }
             .padding(.vertical, pad)
@@ -1786,7 +1824,7 @@ struct WindowStrip: View {
         .onChange(of: client.windows) { _, now in
             // A window that closed or minimized takes its menu, and any drag, with it.
             if let id = menuFor, !now.contains(where: { $0.id == id }) { closeMenu() }
-            if let id = lifted, !now.contains(where: { $0.id == id }) {
+            if let id = lifted, !currentItems.contains(where: { $0.id == id }) {
                 lifted = nil; liftOffset = 0
                 client.persistWindowOrder()
             }
@@ -1800,30 +1838,113 @@ struct WindowStrip: View {
         #endif
     }
 
-    /// The finger moved while the hold is still down. More than 8 pt lifts the thumbnail and
-    /// drags it; the drag reorders live: crossing the middle of a neighbour swaps slots, and the
-    /// lifted thumbnail's offset is corrected by the slots it has moved so it stays under the finger.
-    private func holdMoved(window: WindowInfo, index: Int, count: Int, slot: CGFloat, translation t: CGSize) {
+    /// A window's thumbnail, or a stack: its front window's thumbnail over two cards, the count on it.
+    @ViewBuilder private func tile(_ item: StripItem, index: Int) -> some View {
+        let window = item.front
+        let thumbnail = WindowThumbnail(window: window,
+                                        image: client.thumbnails[window.id],
+                                        icon: client.icons[window.bundleID],
+                                        isActive: item.windows.contains { client.active == .window($0.id) },
+                                        width: width, height: height, radius: radius, badge: badge,
+                                        menuOpen: menuFor == window.id,
+                                        lifted: lifted == item.id,
+                                        onSelect: { pick(.window(window.id)) },
+                                        onCommand: { client.command($0, window: window.id) },
+                                        onMove: { step in
+                                            client.moveWindow(window.id, to: Self.windowIndex(ofItem: index + step, in: currentItems, windows: client.orderedWindows))
+                                            client.persistWindowOrder()
+                                        })
+        if item.stacked {
+            ZStack {
+                ForEach([2, 1], id: \.self) { depth in
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(Palette.control)
+                        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                        .frame(width: width, height: height)
+                        .scaleEffect(1 - CGFloat(depth) * 0.06)
+                        .offset(y: -CGFloat(depth) * 4)
+                }
+                thumbnail
+            }
+            .overlay(alignment: .topTrailing) {
+                Text("\(item.windows.count)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 20, minHeight: 20)
+                    .background(Capsule().fill(Palette.accent))
+                    .offset(x: 6, y: -6)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(window.appName), \(item.windows.count) windows")
+            .accessibilityHint("Shows its windows")
+            .anchorPreference(key: StackAnchorKey.self, value: .bounds) {
+                client.openStack == window.bundleID ? StackAnchor(app: window.bundleID, bounds: $0) : nil
+            }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default) { tapped(item) }
+        } else {
+            thumbnail
+        }
+    }
+
+    /// A tap: a stack opens its panel (again: closes it); a window streams.
+    private func tapped(_ item: StripItem) {
+        if menuFor != nil { closeMenu(); return }
+        if item.stacked {
+            UISelectionFeedbackGenerator().selectionChanged()
+            let app = item.front.bundleID
+            withAnimation(.spring(duration: 0.28, bounce: 0.15)) { client.openStack = client.openStack == app ? nil : app }
+        } else {
+            pick(.window(item.front.id))
+        }
+    }
+
+    private func pick(_ source: StreamSource) {
+        client.select(source)
+        if client.openStack != nil { withAnimation(.easeOut(duration: 0.18)) { client.openStack = nil } }
+    }
+
+    /// Where item `index` starts among the windows (its first window's place); past the end, the last.
+    static func windowIndex(ofItem index: Int, in items: [StripItem], windows: [WindowInfo]) -> Int {
+        guard !items.isEmpty else { return 0 }
+        let item = items[min(max(index, 0), items.count - 1)]
+        return windows.firstIndex { $0.id == item.windows.last(where: { _ in index >= items.count - 1 })?.id ?? item.front.id }
+            ?? max(0, windows.count - 1)
+    }
+
+    /// The finger moved while the hold is still down. More than 8 pt lifts the thumbnail (or the
+    /// stack) and drags it; the drag reorders live: crossing the middle of a neighbour swaps slots,
+    /// and the lifted thumbnail's offset is corrected by the slots it has moved so it stays under the
+    /// finger. A stack moves its app's windows together (StreamClient.moveWindow).
+    private func holdMoved(item: StripItem, index: Int, count: Int, slot: CGFloat, translation t: CGSize) {
         if lifted == nil {
             guard abs(t.width) > 8 || abs(t.height) > 8 else { return }
             closeMenu()
-            lifted = window.id
+            lifted = item.id
             liftStartIndex = index
+            lastTarget = index
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
-        guard lifted == window.id else { return }
+        guard lifted == item.id else { return }
         let shift = Int((t.width / slot).rounded())
         let target = max(0, min(count - 1, liftStartIndex + shift))
-        if let current = client.orderedWindows.firstIndex(where: { $0.id == window.id }), current != target {
+        // One move a slot the finger reaches: an app's windows move as a run, so the tile need not
+        // land on `target`, and asking again would buzz on every move.
+        if target != lastTarget, let current = currentItems.firstIndex(where: { $0.id == item.id }), current != target {
             UISelectionFeedbackGenerator().selectionChanged()
-            withAnimation(.spring(duration: 0.3, bounce: 0.15)) { client.moveWindow(window.id, to: target) }
+            let to = Self.windowIndex(ofItem: target, in: currentItems, windows: client.orderedWindows)
+            withAnimation(.spring(duration: 0.3, bounce: 0.15)) { client.moveWindow(item.front.id, to: to) }
         }
-        liftOffset = t.width - CGFloat(target - liftStartIndex) * slot
+        lastTarget = target
+        let now = currentItems.firstIndex(where: { $0.id == item.id }) ?? target
+        liftOffset = t.width - CGFloat(now - liftStartIndex) * slot
     }
 
     /// The finger lifted after a hold: drop the thumbnail (the submenu, if open, stays).
-    private func holdEnded(window: WindowInfo) {
-        guard lifted == window.id else { return }
+    private func holdEnded(item: StripItem) {
+        guard lifted == item.id else { return }
         withAnimation(.spring(duration: 0.3, bounce: 0.2)) { lifted = nil; liftOffset = 0 }
         client.persistWindowOrder()
     }
@@ -1885,6 +2006,106 @@ struct HoldDragOverlay: UIViewRepresentable {
 }
 
 /// The frame of the thumbnail whose submenu is open, reported up to the screen root.
+/// Where the open stack's tile is, for its panel (`StackPanel`), drawn by the stream screen.
+struct StackAnchor: Equatable {
+    let app: String
+    let bounds: Anchor<CGRect>
+    static func == (a: StackAnchor, b: StackAnchor) -> Bool { a.app == b.app }
+}
+
+struct StackAnchorKey: PreferenceKey {
+    static var defaultValue: StackAnchor? = nil
+    static func reduce(value: inout StackAnchor?, nextValue: () -> StackAnchor?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+/// An app's windows, opened from its stack in the strip: a panel over the strip, the app's name and
+/// count on top, each window larger than in the strip with its title under it. A tap shows that window
+/// and closes the panel; a tap anywhere else closes it.
+struct StackPanel: View {
+    @ObservedObject var client: StreamClient
+    let anchor: StackAnchor
+    let screen: CGSize
+    let below: Bool
+
+    static let cardWidth: CGFloat = 132
+    static let cardHeight: CGFloat = 82
+
+    var body: some View {
+        let windows = client.orderedWindows.filter { $0.bundleID == anchor.app }
+        GeometryReader { geo in
+            let tile = geo[anchor.bounds]
+            let width = min(geo.size.width - 24, CGFloat(windows.count) * (Self.cardWidth + 10) + 30)
+            let height: CGFloat = 44 + Self.cardHeight + 36
+            let x = min(max(tile.midX, width / 2 + 12), geo.size.width - width / 2 - 12)
+            let y = below ? tile.maxY + 10 + height / 2 : tile.minY - 10 - height / 2
+            ZStack {
+                Color.black.opacity(0.35)
+                    .contentShape(Rectangle())
+                    .onTapGesture { close() }
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        AppIcon(image: client.icons[anchor.app], name: windows.first?.appName ?? "", size: 22, radius: 6, fontSize: 9)
+                        Text(windows.first?.appName ?? "")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Palette.text)
+                        Text("\(windows.count) windows")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.barLabel)
+                        Spacer(minLength: 0)
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(windows, id: \.id) { window in card(window) }
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(width: width, height: height)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.bar))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                .shadow(color: .black.opacity(0.6), radius: 24, y: 10)
+                .position(x: x, y: y)
+                .transition(.scale(scale: 0.9, anchor: below ? .top : .bottom).combined(with: .opacity))
+            }
+        }
+        .onChange(of: windows.count) { _, n in if n < 2 { close() } }
+    }
+
+    private func card(_ window: WindowInfo) -> some View {
+        let active = client.active == .window(window.id)
+        return Button {
+            client.select(.window(window.id))
+            close()
+        } label: {
+            VStack(spacing: 4) {
+                Group {
+                    if let image = client.thumbnails[window.id] {
+                        Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        Palette.thumbBody
+                    }
+                }
+                .frame(width: Self.cardWidth, height: Self.cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12), lineWidth: active ? 2 : 1))
+                Text(window.title.isEmpty ? window.appName : window.title)
+                    .font(.system(size: 11, weight: active ? .semibold : .regular))
+                    .foregroundStyle(active ? Palette.text : Palette.barLabel)
+                    .lineLimit(1)
+                    .frame(width: Self.cardWidth)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(window.title.isEmpty ? window.appName : window.title)" + (active ? ", showing now" : ""))
+    }
+
+    private func close() { withAnimation(.easeOut(duration: 0.18)) { client.openStack = nil } }
+}
+
 struct WindowMenuAnchorKey: PreferenceKey {
     static var defaultValue: Anchor<CGRect>? = nil
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
@@ -1962,6 +2183,43 @@ struct WindowLightsMenu: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(label) window")
+    }
+}
+
+/// The Desktop as a thumbnail (`WindowStrip.desktopFirst`): the Mac's symbol on a thumbnail's
+/// ground, its name under it, the active halo while the Desktop streams. A tap shows the Desktop.
+private struct DesktopTile: View {
+    let isActive: Bool
+    let width: CGFloat
+    let height: CGFloat
+    let radius: CGFloat
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(spacing: 3) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: height * 0.36, weight: .regular))
+                Text("Desktop")
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(isActive ? Palette.accent : Palette.text)
+            .frame(width: width, height: height)
+            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.control))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+            .overlay {
+                if isActive {
+                    RoundedRectangle(cornerRadius: radius + 5, style: .continuous)
+                        .strokeBorder(Palette.accent, lineWidth: 2)
+                        .padding(-5)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show the full Mac desktop" + (isActive ? ", showing now" : ""))
     }
 }
 
@@ -2097,6 +2355,19 @@ struct AppDrawer: View {
             searchField
             ScrollView {
                 VStack(spacing: 6) {
+                    if search.isEmpty {
+                        DrawerRow(height: 50, highlighted: client.active == .desktop, title: "Desktop",
+                                  trailing: nil, action: {
+                                      client.select(.desktop)
+                                      withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+                                  }) {
+                            Image(systemName: "desktopcomputer")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Palette.text)
+                                .frame(width: 32, height: 32)
+                                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Palette.control))
+                        }
+                    }
                     if !openApps.isEmpty {
                         header("Open now")
                         ForEach(openApps) { app in

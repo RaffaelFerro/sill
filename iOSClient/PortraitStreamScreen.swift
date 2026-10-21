@@ -482,7 +482,7 @@ struct PortraitStreamScreen: View {
         WindowStrip(client: client, width: metrics.thumbWidth, height: metrics.thumbHeight,
                     radius: metrics.thumbRadius, spacing: metrics.thumbSpacing,
                     pad: metrics.thumbPad, fade: metrics.thumbFade, badge: metrics.badge,
-                    menuFor: $windowMenu)
+                    desktopFirst: metrics.phone, menuFor: $windowMenu)
             .tourTarget(.strip, inset: WindowStrip.tourBand(pad: metrics.thumbPad))
     }
 
