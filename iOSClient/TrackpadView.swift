@@ -164,10 +164,9 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
     /// Counts the fingers on the pad for `onFingers`, whatever the other recognizers take.
     private let fingerCounter = FingerCounter(target: nil, action: nil)
 
-    /// How far the pointer travels for a full swipe across the pad. The client does not know the
-    /// Mac's size, so a real trackpad's pt-for-pt acceleration is not available to copy; 1.25
-    /// frames per swipe lands close enough to reach any corner in one comfortable stroke.
-    private static let travel: CGFloat = 1.25
+    /// How far the pointer travels for a full swipe across the pad (`TrackpadSpeed`, 1.25 frames
+    /// per swipe on Normal), read at the start of each stroke (`adoptAnchor`).
+    private var travel: CGFloat = TrackpadSpeed.normal.travel
 
     // One-finger pointer motion: the tracker, from touch-down.
 
@@ -286,7 +285,7 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
         catchUp()
         // Zoomed, the pointer moves as far on the glass as it would without zoom: finer on the frame.
         let zoom = self.zoom()
-        pad.move(dx: Double(dx / bounds.width * Self.travel / zoom), dy: Double(dy / ySpan * Self.travel / zoom))
+        pad.move(dx: Double(dx / bounds.width * travel / zoom), dy: Double(dy / ySpan * travel / zoom))
         // The sprite first, since it is the feedback the finger is waiting for; then the Mac, whose
         // cursor still has to follow for clicks to land there. No rate limit needed here:
         // sendInput coalesces moves to one every 8 ms.
@@ -299,6 +298,7 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
     /// there keeps the next move from jumping back to the pad's stale idea of it, and makes a tap
     /// click where the pointer is seen. No anchor yet (nothing known this session): it stays.
     private func adoptAnchor() {
+        travel = TrackpadSpeed.stored(UserDefaults.standard.string(forKey: TrackpadSpeed.defaultsKey)).travel
         let f = feed()
         pad.adopt(anchor: f.anchor, reseeds: f.reseeds)
     }

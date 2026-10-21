@@ -61,6 +61,8 @@ struct HostSettingsPanel: View {
     /// This device's Left Option as Command (InputOverlayView, ForwardedKeys): off unless turned on,
     /// read at each key press, never sent.
     @AppStorage(InputOverlayView.leftOptionAsCommandKey) private var leftOptionAsCommand = false
+    /// How fast the pointer moves on the on-screen trackpad (`TrackpadSpeed`), never sent.
+    @AppStorage(TrackpadSpeed.defaultsKey) private var trackpadSpeedRaw = TrackpadSpeed.normal.rawValue
     /// VoiceOver is on: it keeps three-finger swipes and taps for itself, so the This iPad group says
     /// its rows do the gestures instead.
     @State private var voiceOver = HostSettingsPanel.voiceOverRunning
@@ -576,6 +578,17 @@ struct HostSettingsPanel: View {
         Footnote(text: "\(device == "iPad" ? "iPadOS" : "iOS") keeps ⌘Space and ⌘Tab for itself. With this on, "
                  + "a hardware keyboard’s left Option key is Command on \(mac): ⌥Space opens Spotlight and "
                  + "⌥Tab switches apps. The right Option key stays Option.")
+        Rows {
+            AdaptiveRow(title: "Trackpad Speed", since: nil) {
+                Picker("Trackpad Speed", selection: Binding(get: { TrackpadSpeed.stored(trackpadSpeedRaw) },
+                                                            set: { trackpadSpeedRaw = $0.rawValue })) {
+                    ForEach(TrackpadSpeed.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+        }
+        Footnote(text: TrackpadSpeed.footnote)
     }
 
     /// The Mac's window list said it takes the gestures (`WindowList.gestures`).
