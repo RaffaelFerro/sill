@@ -193,6 +193,7 @@ struct StreamScreen: View {
     @State private var autoCheck: Task<Void, Never>?
     /// The screen stays awake while a session shows (Settings › This iPhone).
     @AppStorage(StreamClient.keepScreenOnKey) private var keepScreenOn = false
+    @AppStorage(StreamClient.deferHomeSwipeKey) private var deferHomeSwipe = false
     /// Larger Picture as it was in effect when the Settings panel opened (`largerPictureNow`), which
     /// the arrangement keeps until the panel closes; nil while it is closed. The panel hangs under row
     /// 1, which the arrangement moves by the picture's growth (157 pt on an 18 Pro Max), so a change
@@ -335,6 +336,10 @@ struct StreamScreen: View {
             // display gives the picture the status bar's strip in every pose.
             .duoFold(posture, size: geo.size, screen: "stream screen")
             .duoStatusBar(posture, size: geo.size)
+            // Settings' Taps at the Bottom (kastomm's fork): iOS holds every touch near the bottom edge
+            // while it decides whether it is a Home swipe, which lands on a tap's click and a
+            // tap-drag. Deferred, touches arrive at once and the Home indicator takes a second swipe.
+            .defersSystemGestures(on: deferHomeSwipe ? .bottom : [])
             // Full Screen: the home indicator dimmed, and the Desktop filling the picture if chosen.
             .persistentSystemOverlays(fullScreenOn(layout, posture) ? .hidden : .automatic)
             .onChange(of: fullScreenOn(layout, posture), initial: true) { _, on in fullScreenShown = on }
@@ -1799,7 +1804,7 @@ struct WindowStrip: View {
     /// minimize, full screen) appear in a submenu beside it, the way a held Home Screen icon
     /// offers its menu. Keep holding and move: the submenu goes, the thumbnail lifts and drags
     /// into a new slot. The arrangement is the device's own, persisted per Mac. A tap selects.
-    static let holdToOpen: TimeInterval = 1.5
+    static var holdToOpen: TimeInterval { UserDefaults.standard.bool(forKey: StreamClient.quickHoldKey) ? 0.5 : 1.5 }
     /// What the tour lights of the strip: its thumbnails' band (the strip is as tall as its bar),
     /// with the active halo's 5 pt above and the app badge's 6 pt below.
     static func tourBand(pad: CGFloat) -> EdgeInsets {

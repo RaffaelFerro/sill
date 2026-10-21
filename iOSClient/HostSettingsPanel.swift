@@ -44,6 +44,11 @@ struct HostSettingsPanel: View {
     /// This device's switch for Aim Without Clicking: off unless turned on, read by the trackpad at
     /// each tap and press and hold, never sent.
     @AppStorage(StreamClient.aimWithoutClickingKey) private var aimWithoutClicking = false
+    /// Tap, Then Hold to Drag, a quicker thumbnail hold and taps at the bottom (kastomm's fork): this
+    /// device's own, off unless turned on, never sent.
+    @AppStorage(StreamClient.tapToDragKey) private var tapToDrag = false
+    @AppStorage(StreamClient.quickHoldKey) private var quickHold = false
+    @AppStorage(StreamClient.deferHomeSwipeKey) private var deferHomeSwipe = false
     /// This device's switch for Larger Picture (docs/larger-picture-plan.md): off unless turned on,
     /// read by the stream screen, never sent.
     @AppStorage(StreamClient.largerPictureKey) private var largerPicture = false
@@ -554,6 +559,26 @@ struct HostSettingsPanel: View {
         Footnote(text: aimWithoutClicking
             ? "On the trackpad, moving the pointer and lifting never clicks. Tap without moving to click; hold still, then drag, to drag."
             : "On the trackpad, a short stroke can click as it lifts, and resting on a spot presses the button.")
+        Rows {
+            Toggle(isOn: $tapToDrag) {
+                Text("Tap, Then Hold to Drag").foregroundStyle(Palette.text)
+            }
+            .rowFrame()
+        }
+        Footnote(text: tapToDrag
+            ? "On the trackpad, tap, then tap again and keep your finger down to drag, as on a Mac trackpad. Resting on a spot only moves the pointer."
+            : "On the trackpad, hold still, then drag, to drag.")
+        Rows {
+            Toggle(isOn: $quickHold) {
+                Text("Quick Thumbnail Hold").foregroundStyle(Palette.text)
+            }
+            .rowFrame()
+            Toggle(isOn: $deferHomeSwipe) {
+                Text("Fast Taps at the Bottom").foregroundStyle(Palette.text)
+            }
+            .rowFrame()
+        }
+        Footnote(text: "Quick Thumbnail Hold opens a window’s close, minimize and full screen buttons after half a second. Fast Taps at the Bottom keeps the Home swipe from delaying taps near the screen’s bottom edge; going Home then takes two swipes.")
         Rows {
             Toggle(isOn: $gesturesOn) {
                 Text("Three-Finger Gestures").foregroundStyle(Palette.text)

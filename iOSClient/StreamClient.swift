@@ -3417,6 +3417,14 @@ final class StreamClient: ObservableObject {
     /// (TrackpadSurface's `clickSlop`); off, every short stroke can click as before. Never sent.
     static let aimWithoutClickingKey = "Sill.aimWithoutClicking"
     static var aimWithoutClicking: Bool { UserDefaults.standard.bool(forKey: aimWithoutClickingKey) }
+    /// This device's switch for Tap, Then Hold to Drag (TrackpadSurface): off unless turned on, never sent.
+    static let tapToDragKey = "Sill.tapToDrag"
+    static var tapToDrag: Bool { UserDefaults.standard.bool(forKey: tapToDragKey) }
+    /// This device's switch for a quicker thumbnail hold (0.5 s instead of 1.5 s), never sent.
+    static let quickHoldKey = "Sill.quickHold"
+    /// This device's switch for keeping the Home swipe from delaying taps at the screen's bottom: the
+    /// Home indicator then takes a second swipe, as in a game. Never sent.
+    static let deferHomeSwipeKey = "Sill.deferHomeSwipe"
 
     /// This device's switch for Larger Picture (the Settings panel's This iPhone group; issue #58,
     /// docs/larger-picture-plan.md): off unless turned on. The device's own preference, never sent to
