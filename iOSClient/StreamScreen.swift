@@ -421,6 +421,8 @@ struct StreamScreen: View {
         // Rotation animates, and a Mac window resize restarts the stream, so let the size settle.
         .onChange(of: panelSize) { _, _ in sendViewport(after: 0.25) }
         .onChange(of: fullScreenShown) { _, _ in sendViewport(after: 0.25) }
+        .onChange(of: fullScreenDesktop) { _, _ in sendViewport(after: 0.25) }
+        .onChange(of: client.active == .desktop) { _, _ in sendViewport(after: 0.25) }
         // Same wait for Aa: cycling from Off to 0.8× passes three sizes nobody wants the Mac to try.
         .onChange(of: textScale) { _, _ in sendViewport(after: 0.25) }
         // The stream rate follows the panel (`StreamClient.wantedFPS`): re-send when Low Power Mode
@@ -519,10 +521,14 @@ struct StreamScreen: View {
             print("viewport: \(Self.points(panelSize.width))×\(Self.points(panelSize.height)) pt, scale "
                   + TextScaleControl.label(scale) + (textScale == nil ? " (Auto)" : "") + ", \(fps) fps")
             #endif
+            // Full Screen's As a Monitor: the Desktop on a display of the room's own size and shape
+            // (Saffsanity/sill#156's host side; an older host ignores the key).
+            let monitor = fullScreenShown && fullScreenDesktop == "monitor" && client.active == .desktop
             client.sendViewport(Viewport(width: Double(panelSize.width),
                                          height: Double(panelSize.height),
                                          scale: scale,
-                                         fps: fps))
+                                         fps: fps,
+                                         deviceDesktop: monitor ? true : nil))
             if textScale == nil { checkAutoFit() }
         }
     }

@@ -516,6 +516,7 @@ struct HostSettingsPanel: View {
                     Picker(selection: $fullScreenDesktop) {
                         Text("Fill the Screen").tag("fill")
                         Text("Whole Desktop").tag("fit")
+                        Text("As a Monitor").tag("monitor")
                     } label: {
                         Text("Desktop").foregroundStyle(Palette.text)
                     }
@@ -635,7 +636,7 @@ struct HostSettingsPanel: View {
     /// once Aa sets its text size (or on the virtual display), and that a change applies as the panel
     /// closes (StreamScreen's `largerPictureHeld`).
     /// Under Full Screen's switch.
-    static let fullScreenFooter = "Held upright, the picture fills the whole screen. The handle at the bottom switches between touch and trackpad, hides the controls and leaves Full Screen. Fill the Screen shows the Desktop as tall as the screen and follows the pointer; Whole Desktop shows all of it. To fill the screen with a window, set its text size with Aa."
+    static let fullScreenFooter = "Held upright, the picture fills the whole screen. The handle at the bottom switches between touch and trackpad, hides the controls and leaves Full Screen. Fill the Screen shows the Desktop as tall as the screen and follows the pointer; Whole Desktop shows all of it. As a Monitor gives the Mac a display of this screen’s size and shape while the Desktop shows (Sill Plus for Mac; Sill for Mac shows the whole Desktop). To fill the screen with a window, set its text size with Aa."
 
     static let largerPictureFooter = "Held upright, a window’s picture takes the place of the window thumbnails and reaches down to where the keyboard comes up. The Desktop keeps the thumbnails. Switch windows with Apps: tap an open app again for its next window. To fill the taller picture with a window, set its text size with Aa. A change applies when you close Settings."
 
