@@ -38,6 +38,16 @@ held upright (iPad and sideways as on main, but for Aa's Auto and the strip's st
   virtual display for the Desktop (needs the Mac; PR #156 is close), no check for the drawer or the
   stacks.
 
+**Sill Plus, the package (2026-10-21, branch `sill-plus` from `picture-zoom`).** Merged for Raffael's own
+use: iPhone PRs #174, #152, #163 (with #183's left Option), #172 (its speed divided by the zoom), #183;
+kruzif-x's three device commits; kastomm's tap-then-hold drag, 0.5 s thumbnail hold and deferred Home
+swipe, each a Settings switch off by default (`Sill.tapToDrag`, `Sill.quickHold`, `Sill.deferHomeSwipe`;
+its secondary-click menus left out: a mouse's only). Mac: #201, #182, #198 and #156's host side; Full
+Screen's Desktop gains As a Monitor (`deviceDesktop` while the Desktop shows). Checks: run-all all pass,
+key-strokes 399 and 103 of 103 mutants, window-follow 11 of 11. The Mac app is built as `Sill Plus.app`
+(`com.ferro.sill.mac`, Apple Development signed) in ~/Downloads/SillPlus: a fresh identity, so the iPhone
+pairs again. Untested on devices.
+
 Everything before this (every feature's entry since the first milestone, with its review, results and
 what Noah still has to test) is in `docs/HISTORY.md`.
 
