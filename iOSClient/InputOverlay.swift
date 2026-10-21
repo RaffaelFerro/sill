@@ -18,6 +18,9 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     /// ignored until then, since there is nothing on screen to aim at.
     var videoSize: CGSize = .zero
     var send: (InputEvent) -> Void = { _ in }
+    /// The picture's zoom (`StreamClient.zoom`): a touch maps through it, and where a finger sends the
+    /// pointer is where it follows, once the finger lifts.
+    var zoom: PictureZoom?
     /// Who decides when this view holds the keyboard, told when it joins or leaves a window and when it
     /// becomes or resigns first responder (only the proxy's current view counts).
     weak var keyboardProxy: InputOverlayProxy?
@@ -145,8 +148,12 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
 
     // MARK: - Coordinates
 
-    /// Where the layer actually draws the video inside this view.
-    private var videoRect: CGRect { HEVCDisplayView.videoRect(in: bounds, videoSize: videoSize) }
+    /// Where the layer actually draws the video inside this view, through the picture's zoom: the
+    /// overlay is as large as the display view, so the same rect maps a touch to the frame.
+    private var videoRect: CGRect {
+        let rect = HEVCDisplayView.videoRect(in: bounds, videoSize: videoSize)
+        return zoom?.rect(video: rect, bounds: bounds) ?? rect
+    }
 
     /// A point in this view as a fraction of the video frame. Points in the letterbox are clamped to
     /// the video's edge when `clamped` (moves and drags should keep working past the edge) and
@@ -169,6 +176,9 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     private func sendPointer(_ action: PointerAction, at point: CGPoint, clamped: Bool) -> CGPoint? {
         guard let p = normalized(point, clamped: clamped) else { return nil }
         send(.pointer(action, x: p.x, y: p.y))
+        // A click, a press or a release is where the zoom goes next (once the finger lifts); a move
+        // never is: a hover followed would slide the picture under the hover and chase itself.
+        if action != .move { zoom?.follow(CGPoint(x: p.x, y: p.y)) }
         return CGPoint(x: p.x, y: p.y)
     }
 
@@ -469,6 +479,8 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     private var pointerButtonIsSecondary = false
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        // The zoom holds still while anything touches the picture (`PictureZoom.touchesBegan`).
+        zoom?.touchesBegan(touches.count)
         // Any new touch stops a coasting flick, the way touching a moving list does on iOS (and
         // before the Pencil clicks on content that is still sliding).
         momentum.stop()
@@ -492,6 +504,7 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        zoom?.touchesEnded(touches.count)
         guard let touch = Self.pointerTouch(in: touches) else {
             super.touchesEnded(touches, with: event); return
         }
@@ -500,6 +513,7 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        zoom?.touchesEnded(touches.count)
         guard let touch = Self.pointerTouch(in: touches) else {
             super.touchesCancelled(touches, with: event); return
         }
@@ -941,6 +955,8 @@ final class HardwareKeyboardMonitor: ObservableObject {
 struct InputOverlay: UIViewRepresentable {
     let videoSize: CGSize
     let send: (InputEvent) -> Void
+    /// `StreamClient.zoom`; see `InputOverlayView.zoom`.
+    var zoom: PictureZoom? = nil
     /// `StreamClient.setOwnPointer`; see `InputOverlayView.setOwnPointer`.
     let setOwnPointer: (CGPoint?, PointerPresence.Origin) -> Void
     let proxy: InputOverlayProxy
@@ -960,6 +976,7 @@ struct InputOverlay: UIViewRepresentable {
 
     func updateUIView(_ uiView: InputOverlayView, context: Context) {
         uiView.videoSize = videoSize
+        uiView.zoom = zoom
         uiView.send = send
         uiView.setOwnPointer = setOwnPointer
         uiView.latchedModifiers = latchedModifiers

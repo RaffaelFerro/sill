@@ -432,11 +432,16 @@ final class StreamClient: ObservableObject {
         }
     }
 
+    /// The picture's zoom on this device (a phone's Aa): the display view draws through it, the touch
+    /// overlay maps through it, and it follows the pointer the sprite shows. Main thread.
+    let zoom = PictureZoom()
+
     /// The one display view for the whole session. Landscape and portrait both host it, so a
     /// rotation reparents the same layer (and its last decoded image) instead of creating a fresh
     /// view that would sit black until the next keyframe, up to 4 s later. Main thread.
     private(set) lazy var displayView: HEVCDisplayView = {
         let view = HEVCDisplayView(frame: .zero)
+        view.zoom = zoom
         view.onVideoSize = { [weak self] size in self?.videoSize = size }
         onParameterSets = { ps in view.apply(ps) }
         onFrame = { data, isKey in view.enqueue(data, isKeyframe: isKey) }
@@ -3199,12 +3204,25 @@ final class StreamClient: ObservableObject {
 
     // MARK: Bar order
 
-    /// `windows` in the device's arrangement: arranged ones first, the rest in the host's order.
+    /// `windows` in the device's arrangement: arranged ones first, the rest in the host's order, then
+    /// each app's windows side by side, where the app's first window is (Raffael, 2026-10-21). A drag
+    /// still moves one window; its app's others gather round the first of them.
     var orderedWindows: [WindowInfo] {
         let byID = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0) })
         let arranged = windowOrder.compactMap { byID[$0] }
         let rest = windows.filter { !windowOrder.contains($0.id) }
-        return arranged + rest
+        return Self.groupedByApp(arranged + rest)
+    }
+
+    /// `windows` with each app's together, at its first window's place, in the order they came.
+    static func groupedByApp(_ windows: [WindowInfo]) -> [WindowInfo] {
+        var apps: [String] = []
+        var byApp: [String: [WindowInfo]] = [:]
+        for window in windows {
+            if byApp[window.bundleID] == nil { apps.append(window.bundleID) }
+            byApp[window.bundleID, default: []].append(window)
+        }
+        return apps.flatMap { byApp[$0] ?? [] }
     }
 
     /// Moves a window to `index` of the arranged bar (a drag in progress). Main thread.

@@ -103,6 +103,8 @@ enum DuoLayout {
 struct StreamScreen: View {
     @ObservedObject var client: StreamClient
     @State private var drawerOpen = false
+    /// The phone's Shortcuts drawer (row 1's Shortcuts button, `ShortcutsDrawer`).
+    @State private var shortcutsOpen = false
     @State private var keyboardShown = false
     /// Modifiers held down by the portrait key row until the next key, character or click uses
     /// them. Lives up here so rotating the iPad does not drop a half-typed shortcut.
@@ -417,7 +419,7 @@ struct StreamScreen: View {
 
     /// Nothing open over the stream: the Settings panel (which has the callout), the drawer, the
     /// pairing overlay, the first-run tour (its dim and card; VoiceOver is on its card meanwhile).
-    private var linkLineAllowed: Bool { !settingsOpen && !drawerOpen && !overlayShown && !tourOnScreen }
+    private var linkLineAllowed: Bool { !settingsOpen && !drawerOpen && !shortcutsOpen && !overlayShown && !tourOnScreen }
 
     /// The clipboard's chip shows where the link's line may, and not over a thumbnail's lights or the
     /// Aa ruler either (the Settings panel has its own Paste).
@@ -635,7 +637,7 @@ struct StreamScreen: View {
         if settingsOpen { takers.insert(.settings) }
         if overlayShown { takers.insert(.pairing) }
         if tour != nil { takers.insert(.tour) }
-        if drawerOpen { takers.insert(.drawer) }
+        if drawerOpen || shortcutsOpen { takers.insert(.drawer) }
         if menusOpen { takers.insert(.menus) }
         return takers
     }
@@ -667,7 +669,7 @@ struct StreamScreen: View {
 
     private func putAwayForOverlay() {
         setSettings(false, restoreKeyboard: false)
-        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen = false }
         windowMenu = nil
         scaleOpen = false
         overlay.setKeyboard(shown: false)
@@ -690,7 +692,7 @@ struct StreamScreen: View {
     private func setSettings(_ open: Bool, restoreKeyboard: Bool = true) {
         guard open != settingsOpen else { return }
         if open {
-            withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+            withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen = false }
             windowMenu = nil
             scaleOpen = false
             keyboardBeforeSettings = keyboardShown
@@ -721,7 +723,7 @@ struct StreamScreen: View {
         #endif
         setSettings(false, restoreKeyboard: false)
         windowMenu = nil
-        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen = false }
         menusOpen = true
     }
 
@@ -763,6 +765,7 @@ struct StreamScreen: View {
     /// What is open at the decision, if anything (the rule's `busy`), in the console's words.
     private var tourBusy: String? {
         if drawerOpen { return "the Apps list was open" }
+        if shortcutsOpen { return "the Shortcuts drawer was open" }
         if settingsOpen { return "Settings was open" }
         if windowMenu != nil { return "a window's lights were open" }
         if scaleOpen { return "the Aa ruler was open" }
@@ -1045,6 +1048,7 @@ struct StreamScreen: View {
     /// `largerKeyboard`: Larger Picture's keyboard on a phone (see `body`), nil otherwise.
     private func portrait(metrics: PortraitMetrics, largerKeyboard: CGFloat? = nil) -> some View {
         PortraitStreamScreen(client: client, metrics: metrics, drawerOpen: $drawerOpen,
+                             shortcutsOpen: $shortcutsOpen,
                              keyboardShown: $keyboardShown,
                              textScale: $textScale, scaleOpen: $scaleOpen, windowMenu: $windowMenu,
                              latched: $latched, overlay: overlay,
@@ -1392,15 +1396,27 @@ struct TextScaleControl: View {
     /// text, 2 pt over the value (every bar that has always had it).
     var iconBox: CGFloat? = nil
     var iconSpacing: CGFloat = 2
+    /// The picture's zoom, where this Aa offers it (a phone's row 1): a tap turns it on and off, and
+    /// a hold shows its ruler above Aa's, which the finger reaches by moving up. nil: Aa alone.
+    var zoom: PictureZoom? = nil
 
     static let steps: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5]
     /// Padding either side of the visible ruler; two detents show each side of the thumb.
     static let sliderInset: CGFloat = 30
     var sliderWidth: CGFloat { pointsPerStep * CGFloat(Self.steps.count - 1) + Self.sliderInset * 2 }
+    /// Between Aa's ruler and the zoom's above it.
+    static let rulerGap: CGFloat = 8
+    /// A touch that moves less than this and lifts within `tapTime` is a tap.
+    static let tapSlop: CGFloat = 8
+    static let tapTime: TimeInterval = 0.3
 
     @State private var live: Double = 1.0
     @State private var startValue: Double = 1.0
     @State private var startX: CGFloat = 0
+    /// The zoom ruler is the one the finger is on.
+    @State private var onZoom = false
+    @State private var liveZoom: Double = 1.0
+    @State private var touchStart: Date?
 
     var body: some View {
         VStack(spacing: iconBox == nil ? 2 : iconSpacing) {
@@ -1414,44 +1430,89 @@ struct TextScaleControl: View {
                     .font(.system(size: height >= 60 ? 19 : 17, weight: .semibold))
                     .foregroundStyle(Palette.text)
             }
-            Text(Self.label(scale ?? 1.0) + "×")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Palette.barLabel)
+            if let zoom {
+                ZoomValueLabel(zoom: zoom, text: Self.label(scale ?? 1.0) + "×")
+            } else {
+                Text(Self.label(scale ?? 1.0) + "×")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Palette.barLabel)
+            }
         }
         .frame(width: width, height: height)
         .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.control))
         .opacity(open ? 0 : 1)
         .overlay {
             // Centred on the button: the thumb is where the finger came down.
-            slider
+            slider(values: Self.steps, live: live, active: !onZoom)
                 .opacity(open ? 1 : 0)
                 .scaleEffect(open ? 1 : 0.6)
                 .allowsHitTesting(false)
         }
+        .overlay {
+            if zoom != nil {
+                // The zoom's ruler, over Aa's, on the picture's edge.
+                slider(values: PictureZoom.steps, live: liveZoom, active: onZoom)
+                    .offset(y: -(height + Self.rulerGap))
+                    .opacity(open ? 1 : 0)
+                    .scaleEffect(open ? 1 : 0.6, anchor: .bottom)
+                    .allowsHitTesting(false)
+            }
+        }
         .zIndex(open ? 1 : 0)
-        .onChange(of: open, initial: true) { _, isOpen in if isOpen { live = scale ?? 1.0 } }
+        .onChange(of: open, initial: true) { _, isOpen in
+            if isOpen { live = scale ?? 1.0; liveZoom = zoom?.scale ?? 1.0 }
+        }
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { g in
                     if !open {
+                        touchStart = Date()
+                        onZoom = false
                         startValue = scale ?? 1.0
                         live = startValue
+                        liveZoom = zoom?.scale ?? 1.0
                         startX = g.location.x
                         withAnimation(.spring(duration: 0.22, bounce: 0.15)) { open = true }
                     }
+                    // Up past half a button's height: the zoom's ruler; back down: Aa's. A change of
+                    // ruler starts from where the finger is, so neither value jumps.
+                    let wantsZoom = zoom != nil && g.translation.height < -height / 2
+                    if wantsZoom != onZoom {
+                        onZoom = wantsZoom
+                        startX = g.location.x
+                        startValue = wantsZoom ? liveZoom : live
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    }
                     // The ruler follows the finger: dragging right raises the value, and the ticks
                     // slide left under the fixed thumb.
-                    let dx = g.location.x - startX
-                    let snapped = Self.snap(startValue + Double(dx / pointsPerStep) * 0.25)
-                    if snapped != live {
-                        UISelectionFeedbackGenerator().selectionChanged()
-                        withAnimation(.easeOut(duration: 0.1)) { live = snapped }
+                    let steps = Double((g.location.x - startX) / pointsPerStep)
+                    if onZoom {
+                        let snapped = Self.snap(startValue, by: steps, in: PictureZoom.steps)
+                        if snapped != liveZoom {
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            withAnimation(.easeOut(duration: 0.1)) { liveZoom = snapped }
+                        }
+                    } else {
+                        let snapped = Self.snap(startValue + steps * 0.25)
+                        if snapped != live {
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            withAnimation(.easeOut(duration: 0.1)) { live = snapped }
+                        }
                     }
                 }
-                .onEnded { _ in
-                    if (scale ?? 1.0) != live { scale = live }     // a plain tap on an untouched control changes nothing
-                    withAnimation(.easeOut(duration: 0.2)) { open = false }
+                .onEnded { g in
+                    let tapped = hypot(g.translation.width, g.translation.height) < Self.tapSlop
+                        && Date().timeIntervalSince(touchStart ?? .distantPast) < Self.tapTime
+                    if let zoom, tapped {
+                        zoom.toggle()                                // a tap: the zoom on or off
+                    } else if onZoom {
+                        if let zoom, zoom.scale != liveZoom { zoom.scale = liveZoom }
+                    } else if (scale ?? 1.0) != live {
+                        scale = live     // a plain tap on an untouched control changes nothing
+                    }
+                    touchStart = nil
+                    withAnimation(.easeOut(duration: 0.2)) { open = false; onZoom = false }
                 }
         )
         .onDisappear { open = false }
@@ -1466,31 +1527,34 @@ struct TextScaleControl: View {
             @unknown default: break
             }
         }
+        .modifier(ZoomActions(zoom: zoom))
     }
 
-    /// The ruler: a track with five ticks and labels that slides so the live value sits under the
-    /// fixed thumb; the ends fade out where they run past the panel.
-    private var slider: some View {
+    /// A ruler: a track with a tick and a label per value, sliding so the live value sits under the
+    /// fixed thumb; the ends fade out where they run past the panel. The ruler the finger is not on
+    /// is dimmed.
+    private func slider(values: [Double], live: Double, active: Bool) -> some View {
         let w = sliderWidth
         let step = pointsPerStep
         let midX = w / 2
         let midY = height / 2 + 4
-        func x(_ value: Double) -> CGFloat { midX + CGFloat((value - live) / 0.25) * step }
+        let liveIndex = CGFloat(values.firstIndex(of: live) ?? 0)
+        func x(_ index: Int) -> CGFloat { midX + (CGFloat(index) - liveIndex) * step }
         return ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.controlOpen)
             ZStack(alignment: .topLeading) {
                 Capsule().fill(Palette.barLabel.opacity(0.35))
-                    .frame(width: step * CGFloat(Self.steps.count - 1), height: 3)
-                    .offset(x: x(Self.steps[0]), y: midY - 1.5)
-                ForEach(Self.steps, id: \.self) { value in
+                    .frame(width: step * CGFloat(values.count - 1), height: 3)
+                    .offset(x: x(0), y: midY - 1.5)
+                ForEach(Array(values.enumerated()), id: \.offset) { index, value in
                     Rectangle().fill(Palette.barLabel.opacity(0.6))
                         .frame(width: 2, height: 9)
-                        .offset(x: x(value) - 1, y: midY - 4.5)
+                        .offset(x: x(index) - 1, y: midY - 4.5)
                     Text(Self.label(value))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(value == live ? Palette.text : Palette.barLabel)
                         .frame(width: step, alignment: .center)
-                        .offset(x: x(value) - step / 2, y: midY + 9)
+                        .offset(x: x(index) - step / 2, y: midY + 9)
                 }
             }
             .frame(width: w, height: height, alignment: .topLeading)   // the mask below is sized to this
@@ -1499,7 +1563,7 @@ struct TextScaleControl: View {
                                        .init(color: .black, location: 0.88), .init(color: .clear, location: 1)],
                                startPoint: .leading, endPoint: .trailing)
             )
-            Circle().fill(Palette.accent)
+            Circle().fill(active ? Palette.accent : Palette.barLabel)
                 .frame(width: 22, height: 22)
                 .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
                 .offset(x: midX - 11, y: midY - 11)
@@ -1515,6 +1579,7 @@ struct TextScaleControl: View {
         }
         .frame(width: w, height: height, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .opacity(active ? 1 : 0.55)
     }
 
     /// Nearest detent, clamped to the ends.
@@ -1523,12 +1588,60 @@ struct TextScaleControl: View {
         return steps.min { abs($0 - clamped) < abs($1 - clamped) } ?? 1.0
     }
 
+    /// `values`' detent `steps` detents (rounded) from `start`, clamped to the ends.
+    static func snap(_ start: Double, by steps: Double, in values: [Double]) -> Double {
+        let from = values.firstIndex(of: start) ?? 0
+        let index = min(max(from + Int(steps.rounded()), 0), values.count - 1)
+        return values[index]
+    }
+
     /// 0.5, 0.75, 1, 1.25, 1.5: trailing zeros dropped, and "1" rather than "1.0".
     static func label(_ scale: Double) -> String {
         var text = String(format: "%.2f", scale)
         while text.hasSuffix("0") { text.removeLast() }
         if text.hasSuffix(".") { text.removeLast() }
         return text
+    }
+}
+
+/// Aa's value line where Aa offers the zoom: Aa's value, and the zoom's beside it while zoomed.
+private struct ZoomValueLabel: View {
+    @ObservedObject var zoom: PictureZoom
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(text)
+            if zoom.scale > 1 {
+                Image(systemName: "plus.magnifyingglass").font(.system(size: 9, weight: .semibold))
+                Text(TextScaleControl.label(zoom.scale) + "×")
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(zoom.scale > 1 ? Palette.text : Palette.barLabel)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+}
+
+/// VoiceOver's way to the zoom: actions on Aa, where it offers one.
+private struct ZoomActions: ViewModifier {
+    let zoom: PictureZoom?
+
+    func body(content: Content) -> some View {
+        if let zoom {
+            content
+                .accessibilityAction(named: "Zoom in") {
+                    let i = PictureZoom.steps.firstIndex(of: zoom.scale) ?? 0
+                    zoom.scale = PictureZoom.steps[min(i + 1, PictureZoom.steps.count - 1)]
+                }
+                .accessibilityAction(named: "Zoom out") {
+                    let i = PictureZoom.steps.firstIndex(of: zoom.scale) ?? 0
+                    zoom.scale = PictureZoom.steps[max(i - 1, 0)]
+                }
+        } else {
+            content
+        }
     }
 }
 
@@ -1549,6 +1662,9 @@ struct WindowStrip: View {
     var pad: CGFloat = 10
     var fade: Double = 0.86
     var badge: CGFloat = 24
+    /// The Desktop as the strip's first tile, fixed there (a phone's row 2, where row 1 has no
+    /// Desktop button; Raffael, 2026-10-21). It never moves, and windows cannot be dragged before it.
+    var desktopFirst = false
     /// Which thumbnail has its traffic-light submenu open. Owned by the screen root, which draws
     /// the submenu outside this clipped strip.
     @Binding var menuFor: UInt32?
@@ -1572,6 +1688,10 @@ struct WindowStrip: View {
         let slot = width + spacing
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: spacing) {
+                if desktopFirst {
+                    DesktopTile(isActive: client.active == .desktop, width: width, height: height, radius: radius,
+                                onSelect: { if menuFor != nil { closeMenu() } else { client.select(.desktop) } })
+                }
                 ForEach(Array(windows.enumerated()), id: \.element.id) { index, window in
                     WindowThumbnail(window: window,
                                     image: client.thumbnails[window.id],
@@ -1789,6 +1909,43 @@ struct WindowLightsMenu: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(label) window")
+    }
+}
+
+/// The Desktop as a thumbnail (`WindowStrip.desktopFirst`): the Mac's symbol on a thumbnail's
+/// ground, its name under it, the active halo while the Desktop streams. A tap shows the Desktop.
+private struct DesktopTile: View {
+    let isActive: Bool
+    let width: CGFloat
+    let height: CGFloat
+    let radius: CGFloat
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(spacing: 3) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: height * 0.36, weight: .regular))
+                Text("Desktop")
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(isActive ? Palette.accent : Palette.text)
+            .frame(width: width, height: height)
+            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.control))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+            .overlay {
+                if isActive {
+                    RoundedRectangle(cornerRadius: radius + 5, style: .continuous)
+                        .strokeBorder(Palette.accent, lineWidth: 2)
+                        .padding(-5)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show the full Mac desktop" + (isActive ? ", showing now" : ""))
     }
 }
 
