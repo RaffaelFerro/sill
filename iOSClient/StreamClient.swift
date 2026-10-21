@@ -432,6 +432,16 @@ final class StreamClient: ObservableObject {
         }
     }
 
+    /// The strip's open stack: the app (bundle ID) whose windows show in a panel over the strip, nil
+    /// for none. The strip opens it, the stream screen draws the panel (outside the strip's clip).
+    @Published var openStack: String? = nil
+
+    /// Full Screen on a phone held upright, how the Desktop shows in it, and Keep Screen On: this
+    /// device's own settings (StreamScreen, the Settings panel's This iPhone, the Shortcuts drawer).
+    static let fullScreenKey = "Sill.fullScreen"
+    static let fullScreenDesktopKey = "Sill.fullScreenDesktop"
+    static let keepScreenOnKey = "Sill.keepScreenOn"
+
     /// The picture's zoom on this device (a phone's Aa): the display view draws through it, the touch
     /// overlay maps through it, and it follows the pointer the sprite shows. Main thread.
     let zoom = PictureZoom()
@@ -3225,14 +3235,45 @@ final class StreamClient: ObservableObject {
         return apps.flatMap { byApp[$0] ?? [] }
     }
 
-    /// Moves a window to `index` of the arranged bar (a drag in progress). Main thread.
+    /// Moves a window toward `index` of the arranged bar (a drag in progress). Main thread. Each app's
+    /// windows stay together (`groupedByApp`): inside its app's run the window moves alone; past it,
+    /// the whole run moves past the app whose run `index` falls in.
     func moveWindow(_ id: UInt32, to index: Int) {
         noteAction()
-        var order = orderedWindows.map(\.id)
-        guard let from = order.firstIndex(of: id), index >= 0, index < order.count, from != index else { return }
-        order.remove(at: from)
-        order.insert(id, at: index)
-        windowOrder = order
+        let ordered = orderedWindows
+        guard let from = ordered.firstIndex(where: { $0.id == id }), index >= 0, index < ordered.count, from != index else { return }
+        windowOrder = Self.moved(ordered, from: from, to: index).map(\.id)
+    }
+
+    /// `windows` (grouped by app) with the window at `from` moved toward `to`, its app's run kept
+    /// together and every other run whole.
+    static func moved(_ windows: [WindowInfo], from: Int, to: Int) -> [WindowInfo] {
+        var runs: [[WindowInfo]] = []
+        for window in windows {
+            if let last = runs.last?.last, last.bundleID == window.bundleID { runs[runs.count - 1].append(window) } else { runs.append([window]) }
+        }
+        func run(at index: Int) -> Int {
+            var start = 0
+            for (i, r) in runs.enumerated() {
+                if index < start + r.count { return i }
+                start += r.count
+            }
+            return runs.count - 1
+        }
+        let mine = run(at: from), target = run(at: to)
+        if mine == target {
+            var r = runs[mine]
+            let start = runs[..<mine].reduce(0) { $0 + $1.count }
+            let window = r.remove(at: from - start)
+            r.insert(window, at: min(max(to - start, 0), r.count))
+            runs[mine] = r
+        } else {
+            // Past the target's run when moving right (its index one less once this run is out), before
+            // it when moving left: either way at `target`.
+            let r = runs.remove(at: mine)
+            runs.insert(r, at: min(target, runs.count))
+        }
+        return runs.flatMap { $0 }
     }
 
     /// Saves the arrangement for this Mac (called when a drag ends). Stale ids are kept: a window

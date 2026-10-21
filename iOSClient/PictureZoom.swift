@@ -1,5 +1,6 @@
 import CoreGraphics
 import Combine
+import Foundation
 
 /// The picture's zoom: the streamed frame magnified on this device alone, with the Mac's pointer
 /// held in the middle of the picture as macOS's own Zoom does (Raffael, 2026-10-21). Nothing goes to
@@ -25,10 +26,26 @@ final class PictureZoom: ObservableObject {
     /// The arrangements on screen that offer it: counted, since SwiftUI may show the new one before
     /// it lets the old one go.
     private var offering = 0 { didSet { allowed = offering > 0 } }
-    func offered() { offering += 1 }
-    func withdrawn() { offering = max(0, offering - 1) }
-    /// The scale that applies now.
-    var effectiveScale: CGFloat { allowed && scale > 1 ? CGFloat(scale) : 1 }
+    func offered() { offering += 1; settleTouches() }
+    func withdrawn() { offering = max(0, offering - 1); settleTouches() }
+    /// Full Screen's Fill for the Desktop: the frame magnified until it covers the whole picture
+    /// (its height, on a phone held upright), the zoom chosen on top of that, the pointer still held in
+    /// the middle. Off, the frame fits as it always has.
+    var fill = false { didSet { if fill != oldValue { changed(animated: false) } } }
+    /// The frame drawn against the picture's top rather than in its middle (Full Screen: what a window
+    /// the Mac could not fit leaves over goes by the controls, never above the picture).
+    var alignTop = false { didSet { if alignTop != oldValue { changed(animated: false) } } }
+    /// Fill's own magnification, as the last `rect` found it (1 when the frame already covers it).
+    private var fillScale: CGFloat = 1
+    /// The scale that applies now: Fill's, times the zoom chosen.
+    var effectiveScale: CGFloat {
+        guard allowed else { return 1 }
+        return (fill ? fillScale : 1) * (scale > 1 ? CGFloat(scale) : 1)
+    }
+
+    /// The zoom each source had (`source`): a window keeps its own, the Desktop its own.
+    private var perSource: [String: Double] = [:]
+    private var sourceKey = ""
 
     /// The point of the frame held in the picture's middle, as fractions of the frame: where the
     /// Mac's pointer is, or where a finger last touched.
@@ -38,6 +55,13 @@ final class PictureZoom: ObservableObject {
     private var touching = 0
     /// A focus that came while a finger was down, taken when the last one lifts.
     private var pendingFocus: CGPoint?
+    /// How long after the last finger lifts its click's focus is taken: past the Mac's double-click
+    /// time, so a second tap lands on the picture the first saw (a finger on the glass in between
+    /// waits again). The Mac's arrow and the trackpad's are followed at once.
+    var touchFollowDelay: TimeInterval = 0.5
+    private var touchFollow: DispatchWorkItem?
+    /// When the last finger lifted from the picture.
+    private var lastLift: TimeInterval = -.infinity
 
     /// The display view, told to draw again; `animated` for a jump (a zoom chosen, a tap elsewhere).
     var onChange: ((_ animated: Bool) -> Void)?
@@ -50,26 +74,84 @@ final class PictureZoom: ObservableObject {
     func follow(_ p: CGPoint) {
         let clamped = CGPoint(x: min(max(p.x, 0), 1), y: min(max(p.y, 0), 1))
         if touching > 0 { pendingFocus = clamped; return }
+        // A click whose recognizer answers after the finger lifted waits out the same time.
+        let sinceLift = ProcessInfo.processInfo.systemUptime - lastLift
+        if touchFollowDelay > 0, sinceLift < touchFollowDelay {
+            pendingFocus = clamped
+            if touchFollow == nil { schedule(after: touchFollowDelay - sinceLift) }
+            return
+        }
         let jump = hypot(clamped.x - focus.x, clamped.y - focus.y) * effectiveScale > 0.25
         focus = clamped
         if effectiveScale > 1 { onChange?(jump) }
     }
 
-    func touchesBegan(_ count: Int) { touching += count }
+    /// Another source streams (`key`: "desktop", or a window's id): the zoom it had, none for a new
+    /// one, and the focus back in the middle until the pointer says where it is.
+    func source(_ key: String) {
+        guard key != sourceKey else { return }
+        perSource[sourceKey] = scale
+        sourceKey = key
+        focus = CGPoint(x: 0.5, y: 0.5)
+        let next = perSource[key] ?? 1
+        if next != scale { scale = next } else { changed(animated: false) }
+    }
+
+    func touchesBegan(_ count: Int) {
+        touching += count
+        touchFollow?.cancel()
+        touchFollow = nil
+    }
     func touchesEnded(_ count: Int) {
         touching = max(0, touching - count)
+        guard touching == 0 else { return }
+        lastLift = ProcessInfo.processInfo.systemUptime
+        guard pendingFocus != nil else { return }
+        guard touchFollowDelay > 0 else { takePending(); return }
+        schedule(after: touchFollowDelay)
+    }
+
+    private func schedule(after delay: TimeInterval) {
+        touchFollow?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.takePending() }
+        touchFollow = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func takePending() {
+        touchFollow = nil
         guard touching == 0, let p = pendingFocus else { return }
         pendingFocus = nil
+        lastLift = -.infinity
         follow(p)
+    }
+
+    /// A finger the overlay never saw lift (it left the window mid-touch) holds nothing.
+    private func settleTouches() {
+        touching = 0
+        lastLift = -.infinity
+        touchFollow?.cancel()
+        touchFollow = nil
+        pendingFocus = nil
     }
 
     /// Where the whole frame is drawn now, for a frame drawn at `video` (aspect-fit) inside `bounds`.
     func rect(video: CGRect, bounds: CGRect) -> CGRect {
-        Self.zoomedRect(video: video, bounds: bounds, scale: effectiveScale, focus: focus)
+        fillScale = Self.fillScale(video: video, bounds: bounds)
+        var drawn = Self.zoomedRect(video: video, bounds: bounds, scale: effectiveScale, focus: focus)
+        if alignTop, drawn.height < bounds.height { drawn.origin.y = bounds.minY }
+        return drawn
+    }
+
+    /// Pure: how many times the frame drawn at `video` must grow to cover `bounds` both ways; 1 when
+    /// it already does, or there is no frame.
+    static func fillScale(video: CGRect, bounds: CGRect) -> CGFloat {
+        guard video.width > 0, video.height > 0 else { return 1 }
+        return max(1, bounds.width / video.width, bounds.height / video.height)
     }
 
     private func changed(animated: Bool) {
-        if !allowed || scale <= 1 { touching = 0; pendingFocus = nil }
+        if effectiveScale <= 1 { settleTouches() }
         onChange?(animated)
     }
 
@@ -89,4 +171,23 @@ final class PictureZoom: ObservableObject {
                       y: origin(length: height, boundsMin: bounds.minY, boundsLength: bounds.height, fraction: focus.y),
                       width: width, height: height)
     }
+}
+
+/// Aa's Auto (Raffael, 2026-10-21): the largest text whose window the Mac's app takes whole. A viewport
+/// asks the Mac for a window of the room's size ÷ the scale; an app with a minimum size larger than that
+/// keeps its own, which the picture then letterboxes (black under it). Auto starts at 1× and steps down
+/// until the window the Mac reports is the size asked. Pure, checked by Tests/checks/picture-zoom.
+enum AutoFit {
+    /// Tried in this order.
+    static let steps: [Double] = [1, 0.75, 0.5]
+
+    /// Whether `window` (the Mac's points) is the window a viewport of `room` at `scale` asks for, or
+    /// within it: then nothing is letterboxed.
+    static func fits(window: CGSize, room: CGSize, scale: Double) -> Bool {
+        guard scale > 0, room.width > 0, room.height > 0 else { return true }
+        return window.width <= room.width / scale + 4 && window.height <= room.height / scale + 4
+    }
+
+    /// The next scale to try after `scale` did not fit, nil when none is left.
+    static func next(after scale: Double) -> Double? { steps.first { $0 < scale - 0.001 } }
 }

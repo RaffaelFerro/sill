@@ -9,6 +9,8 @@ struct QuickShortcut: Codable, Identifiable, Equatable {
     var id = UUID()
     var title: String
     var action: Action
+    /// Shown only while a window of this app streams (its bundle ID); nil: always.
+    var onlyApp: String? = nil
 
     enum Action: Codable, Equatable {
         /// A key (a HID usage) with modifiers (`KeyModifiers`' raw value), pressed as a keyboard does.
@@ -22,12 +24,13 @@ struct QuickShortcut: Codable, Identifiable, Equatable {
 
     /// Sill's own actions.
     enum SillAction: String, Codable, CaseIterable, Identifiable {
-        case desktop, zoom, missionControl, appExpose, showDesktop, spotlight
+        case desktop, zoom, fullScreen, missionControl, appExpose, showDesktop, spotlight
         var id: String { rawValue }
         var title: String {
             switch self {
             case .desktop: return "Desktop"
             case .zoom: return "Zoom"
+            case .fullScreen: return "Full Screen"
             case .missionControl: return "Mission Control"
             case .appExpose: return "App Exposé"
             case .showDesktop: return "Show Desktop"
@@ -38,6 +41,7 @@ struct QuickShortcut: Codable, Identifiable, Equatable {
             switch self {
             case .desktop: return "desktopcomputer"
             case .zoom: return "plus.magnifyingglass"
+            case .fullScreen: return "arrow.up.left.and.arrow.down.right"
             case .missionControl: return "rectangle.3.group"
             case .appExpose: return "rectangle.stack"
             case .showDesktop: return "macwindow.on.rectangle"
@@ -109,12 +113,19 @@ final class QuickShortcutStore: ObservableObject {
     @Published var shortcuts: [QuickShortcut] { didSet { save() } }
 
     private init() {
+        // One by one: a shortcut a later build cannot read is left out, never the whole list.
         if let data = UserDefaults.standard.data(forKey: Self.key),
-           let saved = try? JSONDecoder().decode([QuickShortcut].self, from: data) {
-            shortcuts = saved
+           let saved = try? JSONDecoder().decode([Lenient].self, from: data) {
+            shortcuts = saved.compactMap(\.shortcut)
         } else {
             shortcuts = QuickShortcut.starters
         }
+    }
+
+    /// One saved shortcut, or nil where it could not be read.
+    private struct Lenient: Decodable {
+        let shortcut: QuickShortcut?
+        init(from decoder: Decoder) throws { shortcut = try? QuickShortcut(from: decoder) }
     }
 
     private func save() {
@@ -158,6 +169,9 @@ extension StreamClient {
             switch action {
             case .desktop: select(.desktop)
             case .zoom: zoom.toggle()
+            case .fullScreen:
+                let key = StreamClient.fullScreenKey
+                UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)
             case .missionControl: sendGesture(.swipeUp, fingers: 3)
             case .appExpose: sendGesture(.swipeDown, fingers: 3)
             case .showDesktop: sendGesture(.spread, fingers: 3)
@@ -187,6 +201,11 @@ struct ShortcutsDrawer: View {
 
     @State private var editing = false
     @State private var editor: QuickShortcut?
+    /// The software keyboard's top in the screen's space, while it is up (the editor's fields): the
+    /// stream screen ignores the keyboard, so the drawer keeps its content above it by itself.
+    @State private var keyboardTop: CGFloat?
+    /// The drawer's bottom in the screen's space.
+    @State private var drawerBottom: CGFloat = 0
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 8)]
 
@@ -207,11 +226,16 @@ struct ShortcutsDrawer: View {
                                 client.select(.desktop); close()
                             }
                         }
-                        ForEach(store.shortcuts) { shortcut in
+                        ForEach(store.shortcuts.filter { editing || $0.onlyApp == nil || $0.onlyApp == streamedApp }) { shortcut in
                             tile(symbol: shortcut.symbol, title: shortcut.title, detail: shortcut.detail) {
                                 if editing { editor = shortcut } else if client.run(shortcut) { close() }
                             }
                             .overlay(alignment: .topTrailing) { if editing { reorder(shortcut) } }
+                            .overlay(alignment: .topLeading) {
+                                if let app = shortcut.onlyApp {
+                                    AppIcon(image: client.icons[app], name: app, size: 18, radius: 5, fontSize: 8).padding(6)
+                                }
+                            }
                         }
                         if editing {
                             tile(symbol: "plus", title: "Add", detail: "A new shortcut") {
@@ -224,10 +248,20 @@ struct ShortcutsDrawer: View {
             }
         }
         .padding(14)
+        .padding(.bottom, keyboardTop.map { max(0, drawerBottom - $0) } ?? 0)
         .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Palette.bar))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
             .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
         .shadow(color: .black.opacity(0.65), radius: 30, x: 0, y: 24)
+        .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).maxY }) { drawerBottom = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let end = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screen = UIScreen.main.bounds.height
+            withAnimation(.easeOut(duration: 0.25)) { keyboardTop = end.minY < screen ? end.minY : nil }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.25)) { keyboardTop = nil }
+        }
         .onChange(of: open) { _, isOpen in if !isOpen { editing = false; editor = nil } }
     }
 
@@ -285,6 +319,12 @@ struct ShortcutsDrawer: View {
     }
 
     private func close() { withAnimation(.easeOut(duration: 0.18)) { open = false } }
+
+    /// The app whose window streams now, whose own shortcuts show; nil for the Desktop.
+    private var streamedApp: String? {
+        guard case .window(let id) = client.active else { return nil }
+        return client.windows.first { $0.id == id }?.bundleID
+    }
 }
 
 /// One shortcut's form, inside the drawer.
@@ -331,6 +371,15 @@ private struct ShortcutEditor: View {
                         .foregroundStyle(Palette.text)
                         .padding(10)
                         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Palette.control))
+
+                    Picker(selection: $shortcut.onlyApp) {
+                        Text("Every App").tag(String?.none)
+                        ForEach(appChoices, id: \.bundleID) { Text($0.name).tag(Optional($0.bundleID)) }
+                    } label: {
+                        Text("Show For").foregroundStyle(Palette.text)
+                    }
+                    .pickerStyle(.menu)
+                    .tint(Palette.text)
 
                     Picker("Kind", selection: $kind) {
                         ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }

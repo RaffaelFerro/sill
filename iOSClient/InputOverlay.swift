@@ -100,6 +100,17 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         tap.allowedTouchTypes = directOnly
         addGestureRecognizer(tap)
 
+        // Two fingers tapped twice: the picture's zoom on or off, where it is offered (a phone held
+        // upright). Nothing else uses two fingers tapping here, so it holds up no other recognizer.
+        let zoomTap = UITapGestureRecognizer(target: self, action: #selector(handleZoomTap))
+        zoomTap.numberOfTouchesRequired = 2
+        zoomTap.numberOfTapsRequired = 2
+        zoomTap.allowedTouchTypes = directOnly
+        // It never holds the other touches back: a tap still clicks, a pan still scrolls at once.
+        zoomTap.cancelsTouchesInView = false
+        zoomTap.delaysTouchesEnded = false
+        addGestureRecognizer(zoomTap)
+
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress))
         longPress.minimumPressDuration = 0.45
         longPress.allowedTouchTypes = directOnly
@@ -189,6 +200,13 @@ final class InputOverlayView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard !strokes.silent else { return }
         tap(at: gesture.location(in: self))
+    }
+
+    /// Two fingers, two taps: the zoom on or off (`PictureZoom.toggle`), only where it applies.
+    @objc private func handleZoomTap(_ gesture: UITapGestureRecognizer) {
+        guard !strokes.silent, let zoom, zoom.allowed else { return }
+        UISelectionFeedbackGenerator().selectionChanged()
+        zoom.toggle()
     }
 
     /// A finger's tap at `point`, in this view: the pointer goes there, then clicks.

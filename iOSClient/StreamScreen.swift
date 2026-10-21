@@ -175,6 +175,24 @@ struct StreamScreen: View {
     /// This device's Larger Picture switch (the Settings panel's This iPhone; docs/larger-picture-plan.md).
     /// It acts only while a window streams (`largerPictureNow`).
     @AppStorage(StreamClient.largerPictureKey) private var largerPicture = false
+    /// Full Screen on a phone held upright (`FullScreenLayout`), and its input mode, and how the
+    /// Desktop shows there ("fill": the frame covers the screen and follows the pointer; "fit": whole).
+    @AppStorage(StreamClient.fullScreenKey) private var fullScreen = false
+    @AppStorage("Sill.fullScreenTrackpad") private var fullScreenTrackpad = false
+    @AppStorage(StreamClient.fullScreenDesktopKey) private var fullScreenDesktop = "fill"
+    /// Full Screen's controls showing (row 1 and the key row), or only its handle.
+    @State private var fullScreenExpanded = true
+    /// Full Screen's switch as it was when the Settings panel opened: the arrangement holds still under
+    /// the panel, and a change applies as it closes (as Larger Picture's does).
+    @State private var fullScreenHeld: Bool? = nil
+    /// Full Screen in effect now, as the body last found it (the tour's rule reads it).
+    @State private var fullScreenShown = false
+    /// Aa's Auto (`AutoFit`): the scale that fit each window in each room ("id@W×H"), once found.
+    @State private var autoScales: [String: Double] = [:]
+    /// The check that follows a viewport sent under Auto: whether the Mac's app took the window whole.
+    @State private var autoCheck: Task<Void, Never>?
+    /// The screen stays awake while a session shows (Settings › This iPhone).
+    @AppStorage(StreamClient.keepScreenOnKey) private var keepScreenOn = false
     /// Larger Picture as it was in effect when the Settings panel opened (`largerPictureNow`), which
     /// the arrangement keeps until the panel closes; nil while it is closed. The panel hangs under row
     /// 1, which the arrangement moves by the picture's growth (157 pt on an 18 Pro Max), so a change
@@ -246,7 +264,9 @@ struct StreamScreen: View {
                     case .innerPortrait:
                         portrait(metrics: .regular)
                     case .outerPortrait:
-                        portrait(metrics: DuoLayout.phoneArrangement ? .phone : .compact, largerKeyboard: largerKeyboard)
+                        portrait(metrics: DuoLayout.phoneArrangement ? .phone : .compact, largerKeyboard: largerKeyboard,
+                                 fullScreen: fullScreenOn(layout, posture) ? fullScreenControls : nil)
+                            .ignoresSafeArea(edges: fullScreenOn(layout, posture) ? .all : [])
                     }
                 }
                 // Under the pairing overlay and the tour nothing takes a touch: not the bar, and
@@ -315,6 +335,11 @@ struct StreamScreen: View {
             // display gives the picture the status bar's strip in every pose.
             .duoFold(posture, size: geo.size, screen: "stream screen")
             .duoStatusBar(posture, size: geo.size)
+            // Full Screen: no status bar, the home indicator dimmed, the Desktop filling it if chosen.
+            .persistentSystemOverlays(fullScreenOn(layout, posture) ? .hidden : .automatic)
+            .onChange(of: fullScreenOn(layout, posture), initial: true) { _, on in fullScreenShown = on }
+            .onChange(of: fullScreenOn(layout, posture) && fullScreenDesktop == "fill" && client.active == .desktop,
+                      initial: true) { _, fill in client.zoom.fill = fill }
             .environment(\.largerPictureOffered, offersLarger)
             #if DEBUG
             // The console's line for the gates: what Larger Picture's rule made of the switch and of
@@ -334,6 +359,15 @@ struct StreamScreen: View {
             }
         }
         .animation(.spring(duration: 0.25, bounce: 0.2), value: windowMenu)
+        .overlayPreferenceValue(StackAnchorKey.self) { anchor in
+            if let anchor, client.openStack == anchor.app {
+                GeometryReader { geo in
+                    // Below the strip when it is in the screen's top third (a landscape bar), else above.
+                    let below = geo[anchor.bounds].midY < geo.size.height / 3
+                    StackPanel(client: client, anchor: anchor, screen: geo.size, below: below)
+                }
+            }
+        }
         .onChange(of: client.pendingLink) { _, link in
             // An outside link while streaming: the panel and the keyboard go first, as for Pair This iPad….
             if link != nil { openLinkOverlay() }
@@ -347,6 +381,9 @@ struct StreamScreen: View {
         .onChange(of: scaleOpen) { _, open in if open { setSettings(false) } }
         .onChange(of: windowMenu) { _, menu in if menu != nil { setSettings(false) } }
         .ignoresSafeArea(edges: .bottom)
+        // Keep Screen On: no auto-lock while the stream screen shows.
+        .onChange(of: keepScreenOn, initial: true) { _, on in UIApplication.shared.isIdleTimerDisabled = on }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .onAppear {
             // A fresh connection starts on the Desktop (the client asks for it as soon as the host
             // reports nothing streaming), so the drawer stays closed until the user opens it.
@@ -357,7 +394,13 @@ struct StreamScreen: View {
             runLaunchArguments()
             #endif
         }
-        .onChange(of: client.active) { _, source in
+        .onChange(of: client.active, initial: true) { _, source in
+            // The zoom each source had (PictureZoom.source); nothing streaming keeps the last.
+            switch source {
+            case .desktop: client.zoom.source("desktop")
+            case .window(let id): client.zoom.source("window:\(id)")
+            case .none: break
+            }
             if source != .none { withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false } }
             // The host sizes a window as it selects it, from the last viewport it has; this repeat
             // is for a host that restarted, or a window that was picked from the Mac's side.
@@ -372,6 +415,7 @@ struct StreamScreen: View {
         .onChange(of: keyboardTakers, initial: true) { _, takers in overlay.update(takers: takers) }
         // Rotation animates, and a Mac window resize restarts the stream, so let the size settle.
         .onChange(of: panelSize) { _, _ in sendViewport(after: 0.25) }
+        .onChange(of: fullScreenShown) { _, _ in sendViewport(after: 0.25) }
         // Same wait for Aa: cycling from Off to 0.8× passes three sizes nobody wants the Mac to try.
         .onChange(of: textScale) { _, _ in sendViewport(after: 0.25) }
         // The stream rate follows the panel (`StreamClient.wantedFPS`): re-send when Low Power Mode
@@ -465,14 +509,48 @@ struct StreamScreen: View {
             }
             guard client.connected, panelSize.width > 0, panelSize.height > 0 else { return }
             let fps = StreamClient.wantedFPS(remote: client.awayCapsFrameRate)
+            let scale = textScale ?? autoScale
             #if DEBUG
             print("viewport: \(Self.points(panelSize.width))×\(Self.points(panelSize.height)) pt, scale "
-                  + (textScale.map { TextScaleControl.label($0) } ?? "none") + ", \(fps) fps")
+                  + TextScaleControl.label(scale) + (textScale == nil ? " (Auto)" : "") + ", \(fps) fps")
             #endif
             client.sendViewport(Viewport(width: Double(panelSize.width),
                                          height: Double(panelSize.height),
-                                         scale: textScale,
+                                         scale: scale,
                                          fps: fps))
+            if textScale == nil { checkAutoFit() }
+        }
+    }
+
+    /// Auto's key for the window streaming now in this room, nil for the Desktop or nothing.
+    private var autoKey: String? {
+        guard case .window(let id) = client.active else { return nil }
+        return "\(id)@\(Int(panelSize.width))x\(Int(panelSize.height))"
+    }
+
+    /// Auto's scale for what streams now: what fit before in this room, else 1×.
+    private var autoScale: Double { autoKey.flatMap { autoScales[$0] } ?? AutoFit.steps[0] }
+
+    /// Auto: once the Mac has had time to resize the window (and list it again), a window larger than
+    /// asked (its app's minimum) tries the next smaller scale, until one fits or none is left.
+    private func checkAutoFit() {
+        autoCheck?.cancel()
+        guard let key = autoKey, case .window(let id) = client.active else { return }
+        let scale = autoScale, room = panelSize
+        autoCheck = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled, textScale == nil, autoKey == key, panelSize == room,
+                  let w = client.windows.first(where: { $0.id == id }) else { return }
+            let window = CGSize(width: w.width, height: w.height)
+            guard !AutoFit.fits(window: window, room: room, scale: scale), let next = AutoFit.next(after: scale) else {
+                autoScales[key] = scale
+                return
+            }
+            #if DEBUG
+            print("auto: \(w.appName) is \(w.width)×\(w.height) pt, larger than asked at \(TextScaleControl.label(scale))×; trying \(TextScaleControl.label(next))×")
+            #endif
+            autoScales[key] = next
+            sendViewport()
         }
     }
 
@@ -705,6 +783,7 @@ struct StreamScreen: View {
             // panel never moves under the finger: a change of the switch, or of what streams,
             // applies as the panel goes.
             largerPictureHeld = open ? largerPictureNow : nil
+            fullScreenHeld = open ? fullScreen : nil
         }
         if !open {
             if restoreKeyboard, keyboardBeforeSettings { overlay.setKeyboard(shown: true) }
@@ -766,6 +845,7 @@ struct StreamScreen: View {
     private var tourBusy: String? {
         if drawerOpen { return "the Apps list was open" }
         if shortcutsOpen { return "the Shortcuts drawer was open" }
+        if fullScreenShown { return "Full Screen was on" }
         if settingsOpen { return "Settings was open" }
         if windowMenu != nil { return "a window's lights were open" }
         if scaleOpen { return "the Aa ruler was open" }
@@ -971,6 +1051,8 @@ struct StreamScreen: View {
     /// Settings › Take the Tour: the panel closes without putting the keyboard back (the tour does,
     /// at its end, if it was up before the panel opened), then every step of the layout on screen.
     private func takeTour() {
+        // The tour's cards point at the usual arrangement's rows: Full Screen goes first.
+        fullScreen = false
         let keyboard = keyboardBeforeSettings
         setSettings(false, restoreKeyboard: false)
         tourLog("Take the Tour")
@@ -1046,7 +1128,8 @@ struct StreamScreen: View {
     }
 
     /// `largerKeyboard`: Larger Picture's keyboard on a phone (see `body`), nil otherwise.
-    private func portrait(metrics: PortraitMetrics, largerKeyboard: CGFloat? = nil) -> some View {
+    private func portrait(metrics: PortraitMetrics, largerKeyboard: CGFloat? = nil,
+                          fullScreen: FullScreenControls? = nil) -> some View {
         PortraitStreamScreen(client: client, metrics: metrics, drawerOpen: $drawerOpen,
                              shortcutsOpen: $shortcutsOpen,
                              keyboardShown: $keyboardShown,
@@ -1060,7 +1143,29 @@ struct StreamScreen: View {
                              pairThisDevice: openPairingOverlay,
                              linkLine: shownLinkLine,
                              takeTour: takeTour,
-                             largerKeyboard: largerKeyboard)
+                             largerKeyboard: largerKeyboard,
+                             fullScreen: fullScreen,
+                             enterFullScreen: metrics.phone && duoEnvironment.hinge == .unknown
+                                ? { withAnimation(.easeOut(duration: 0.2)) { self.fullScreen = true } } : nil)
+    }
+
+    /// Full Screen in effect: the switch on (as it was when Settings opened, while it is open), a
+    /// phone held upright, no hinge. Whatever streams, so a window closing (nothing, for a moment,
+    /// until the Desktop) never drops out of it and back, each time with a new viewport.
+    private func fullScreenOn(_ layout: TourLayout, _ posture: DuoPosture) -> Bool {
+        (fullScreenHeld ?? fullScreen) && layout == .phone && DuoLayout.phoneArrangement && posture.hinge == .unknown
+    }
+
+    private var fullScreenControls: FullScreenControls {
+        FullScreenControls(trackpad: $fullScreenTrackpad, expanded: $fullScreenExpanded,
+                           insets: Self.windowInsets,
+                           exit: { withAnimation(.easeOut(duration: 0.2)) { fullScreen = false } })
+    }
+
+    /// The key window's safe-area insets: Full Screen's picture runs under them, its controls do not.
+    private static var windowInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first { $0.isKeyWindow }?.safeAreaInsets ?? .zero
     }
 
     private var streamShape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
@@ -1400,7 +1505,9 @@ struct TextScaleControl: View {
     /// a hold shows its ruler above Aa's, which the finger reaches by moving up. nil: Aa alone.
     var zoom: PictureZoom? = nil
 
-    static let steps: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5]
+    /// The detents, Auto first: 0 stands for Auto (`scale` nil), the Sill's own pick
+    /// (`AutoFit`): the largest text whose window the Mac's app takes whole.
+    static let steps: [Double] = [0, 0.5, 0.75, 1.0, 1.25, 1.5]
     /// Padding either side of the visible ruler; two detents show each side of the thumb.
     static let sliderInset: CGFloat = 30
     var sliderWidth: CGFloat { pointsPerStep * CGFloat(Self.steps.count - 1) + Self.sliderInset * 2 }
@@ -1431,9 +1538,9 @@ struct TextScaleControl: View {
                     .foregroundStyle(Palette.text)
             }
             if let zoom {
-                ZoomValueLabel(zoom: zoom, text: Self.label(scale ?? 1.0) + "×")
+                ZoomValueLabel(zoom: zoom, text: Self.valueLabel(scale ?? 0))
             } else {
-                Text(Self.label(scale ?? 1.0) + "×")
+                Text(Self.valueLabel(scale ?? 0))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Palette.barLabel)
             }
@@ -1460,20 +1567,33 @@ struct TextScaleControl: View {
         }
         .zIndex(open ? 1 : 0)
         .onChange(of: open, initial: true) { _, isOpen in
-            if isOpen { live = scale ?? 1.0; liveZoom = zoom?.scale ?? 1.0 }
+            if isOpen { live = scale ?? 0; liveZoom = zoom?.scale ?? 1.0 }
         }
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { g in
-                    if !open {
-                        touchStart = Date()
+                    if touchStart == nil {
+                        let start = Date()
+                        touchStart = start
                         onZoom = false
-                        startValue = scale ?? 1.0
+                        startValue = scale ?? 0
                         live = startValue
                         liveZoom = zoom?.scale ?? 1.0
                         startX = g.location.x
-                        withAnimation(.spring(duration: 0.22, bounce: 0.15)) { open = true }
+                        if zoom == nil {
+                            unfold()
+                        } else {
+                            // Where Aa offers the zoom a quick tap turns it on or off, so the rulers wait
+                            // for a hold or a move: a tap never flashes them (nor folds row 1 away).
+                            DispatchQueue.main.asyncAfter(deadline: .now() + Self.tapTime) {
+                                if touchStart == start, !open { unfold() }
+                            }
+                        }
+                    }
+                    if !open {
+                        guard hypot(g.translation.width, g.translation.height) >= Self.tapSlop else { return }
+                        unfold()
                     }
                     // Up past half a button's height: the zoom's ruler; back down: Aa's. A change of
                     // ruler starts from where the finger is, so neither value jumps.
@@ -1494,7 +1614,7 @@ struct TextScaleControl: View {
                             withAnimation(.easeOut(duration: 0.1)) { liveZoom = snapped }
                         }
                     } else {
-                        let snapped = Self.snap(startValue + steps * 0.25)
+                        let snapped = Self.snap(startValue, by: steps, in: Self.steps)
                         if snapped != live {
                             UISelectionFeedbackGenerator().selectionChanged()
                             withAnimation(.easeOut(duration: 0.1)) { live = snapped }
@@ -1508,8 +1628,8 @@ struct TextScaleControl: View {
                         zoom.toggle()                                // a tap: the zoom on or off
                     } else if onZoom {
                         if let zoom, zoom.scale != liveZoom { zoom.scale = liveZoom }
-                    } else if (scale ?? 1.0) != live {
-                        scale = live     // a plain tap on an untouched control changes nothing
+                    } else if (scale ?? 0) != live {
+                        scale = live == 0 ? nil : live     // a plain tap on an untouched control changes nothing
                     }
                     touchStart = nil
                     withAnimation(.easeOut(duration: 0.2)) { open = false; onZoom = false }
@@ -1518,16 +1638,23 @@ struct TextScaleControl: View {
         .onDisappear { open = false }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Text size")
-        .accessibilityValue("\(Self.label(scale ?? 1.0)) times")
+        .accessibilityValue(scale.map { "\(Self.label($0)) times" } ?? "Auto")
         .accessibilityAdjustableAction { direction in
-            let i = Self.steps.firstIndex(of: scale ?? 1.0) ?? 2
+            let i = Self.steps.firstIndex(of: scale ?? 0) ?? 0
+            let next: Double
             switch direction {
-            case .increment: scale = Self.steps[min(i + 1, Self.steps.count - 1)]
-            case .decrement: scale = Self.steps[max(i - 1, 0)]
-            @unknown default: break
+            case .increment: next = Self.steps[min(i + 1, Self.steps.count - 1)]
+            case .decrement: next = Self.steps[max(i - 1, 0)]
+            @unknown default: return
             }
+            scale = next == 0 ? nil : next
         }
         .modifier(ZoomActions(zoom: zoom))
+    }
+
+    /// The rulers open, centred on Aa.
+    private func unfold() {
+        withAnimation(.spring(duration: 0.22, bounce: 0.15)) { open = true }
     }
 
     /// A ruler: a track with a tick and a label per value, sliding so the live value sits under the
@@ -1571,7 +1698,7 @@ struct TextScaleControl: View {
             // (a phone's row 1, the compact window bar) `midY - 34` put the top of its digits 2 pt
             // outside the clip; it sits where the 58 pt bars put it (1 pt above the frame's top,
             // the digits 2 pt inside), and in the taller bars as it always has.
-            Text(Self.label(live) + "×")
+            Text(Self.valueLabel(live))
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Palette.text)
                 .frame(width: 60, alignment: .center)
@@ -1582,12 +1709,6 @@ struct TextScaleControl: View {
         .opacity(active ? 1 : 0.55)
     }
 
-    /// Nearest detent, clamped to the ends.
-    static func snap(_ value: Double) -> Double {
-        let clamped = min(max(value, steps[0]), steps[steps.count - 1])
-        return steps.min { abs($0 - clamped) < abs($1 - clamped) } ?? 1.0
-    }
-
     /// `values`' detent `steps` detents (rounded) from `start`, clamped to the ends.
     static func snap(_ start: Double, by steps: Double, in values: [Double]) -> Double {
         let from = values.firstIndex(of: start) ?? 0
@@ -1595,8 +1716,12 @@ struct TextScaleControl: View {
         return values[index]
     }
 
-    /// 0.5, 0.75, 1, 1.25, 1.5: trailing zeros dropped, and "1" rather than "1.0".
+    /// Under Aa and over the thumb: "Auto", or "0.75×".
+    static func valueLabel(_ scale: Double) -> String { scale == 0 ? "Auto" : label(scale) + "×" }
+
+    /// 0.5, 0.75, 1, 1.25, 1.5: trailing zeros dropped, and "1" rather than "1.0"; 0 is Auto.
     static func label(_ scale: Double) -> String {
+        if scale == 0 { return "Auto" }
         var text = String(format: "%.2f", scale)
         while text.hasSuffix("0") { text.removeLast() }
         if text.hasSuffix(".") { text.removeLast() }
@@ -1679,45 +1804,67 @@ struct WindowStrip: View {
     static func tourBand(pad: CGFloat) -> EdgeInsets {
         EdgeInsets(top: max(0, pad - 5), leading: 0, bottom: max(0, pad - 6), trailing: 0)
     }
-    @State private var lifted: UInt32? = nil
+    /// The item being dragged (`StripItem.id`).
+    @State private var lifted: String? = nil
     @State private var liftOffset: CGFloat = 0
     @State private var liftStartIndex = 0
+    /// The slot the dragging finger last reached.
+    @State private var lastTarget = -1
+
+    /// One thumbnail in the strip: a window, or a stack of one app's windows (Raffael, 2026-10-21:
+    /// one per app). A stack shows its app's window that streams, else its first; a tap opens its
+    /// panel over the strip (`StackPanel`), where a window is chosen.
+    struct StripItem: Identifiable {
+        let id: String
+        let windows: [WindowInfo]
+        let stacked: Bool
+        var front: WindowInfo { windows[0] }
+    }
+
+    /// `windows` (each app's together, `StreamClient.orderedWindows`) as the strip's items: one app's
+    /// several windows a stack.
+    static func items(_ windows: [WindowInfo], active: StreamSource) -> [StripItem] {
+        var runs: [[WindowInfo]] = []
+        for window in windows {
+            if let last = runs.last?.last, last.bundleID == window.bundleID { runs[runs.count - 1].append(window) } else { runs.append([window]) }
+        }
+        return runs.flatMap { run -> [StripItem] in
+            guard run.count > 1 else {
+                return run.map { StripItem(id: "w\($0.id)", windows: [$0], stacked: false) }
+            }
+            var ordered = run
+            if case .window(let id) = active, let i = run.firstIndex(where: { $0.id == id }) { ordered.insert(ordered.remove(at: i), at: 0) }
+            return [StripItem(id: "s" + run[0].bundleID, windows: ordered, stacked: true)]
+        }
+    }
+
+    private var currentItems: [StripItem] {
+        Self.items(client.orderedWindows, active: client.active)
+    }
 
     var body: some View {
-        let windows = client.orderedWindows
+        let items = currentItems
         let slot = width + spacing
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: spacing) {
                 if desktopFirst {
                     DesktopTile(isActive: client.active == .desktop, width: width, height: height, radius: radius,
-                                onSelect: { if menuFor != nil { closeMenu() } else { client.select(.desktop) } })
+                                onSelect: { if menuFor != nil { closeMenu() } else { pick(.desktop) } })
                 }
-                ForEach(Array(windows.enumerated()), id: \.element.id) { index, window in
-                    WindowThumbnail(window: window,
-                                    image: client.thumbnails[window.id],
-                                    icon: client.icons[window.bundleID],
-                                    isActive: client.active == .window(window.id),
-                                    width: width, height: height, radius: radius, badge: badge,
-                                    menuOpen: menuFor == window.id,
-                                    lifted: lifted == window.id,
-                                    onSelect: { client.select(.window(window.id)) },
-                                    onCommand: { client.command($0, window: window.id) },
-                                    onMove: { step in
-                                        client.moveWindow(window.id, to: index + step)
-                                        client.persistWindowOrder()
-                                    })
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    tile(item, index: index)
                         .overlay {
                             HoldDragOverlay(minimumHold: Self.holdToOpen,
-                                            onTap: { if menuFor != nil { closeMenu() } else { client.select(.window(window.id)) } },
-                                            onHold: { openMenu(for: window.id) },
-                                            onMove: { t in holdMoved(window: window, index: index, count: windows.count, slot: slot, translation: t) },
-                                            onEnd: { holdEnded(window: window) })
+                                            onTap: { tapped(item) },
+                                            onHold: { if !item.stacked { openMenu(for: item.front.id) } },
+                                            onMove: { t in holdMoved(item: item, index: index, count: items.count, slot: slot, translation: t) },
+                                            onEnd: { holdEnded(item: item) })
                         }
-                        .offset(x: lifted == window.id ? liftOffset : 0)
-                        .zIndex(lifted == window.id ? 1 : 0)
+                        .offset(x: lifted == item.id ? liftOffset : 0)
+                        .zIndex(lifted == item.id ? 1 : 0)
                         // The lifted thumbnail follows the finger: its slot change must not animate,
                         // or the layout springs one way while the compensating offset jumps the other.
-                        .transaction { if lifted == window.id { $0.animation = nil } }
+                        .transaction { if lifted == item.id { $0.animation = nil } }
                 }
             }
             .padding(.vertical, pad)
@@ -1733,7 +1880,7 @@ struct WindowStrip: View {
         .onChange(of: client.windows) { _, now in
             // A window that closed or minimized takes its menu, and any drag, with it.
             if let id = menuFor, !now.contains(where: { $0.id == id }) { closeMenu() }
-            if let id = lifted, !now.contains(where: { $0.id == id }) {
+            if let id = lifted, !currentItems.contains(where: { $0.id == id }) {
                 lifted = nil; liftOffset = 0
                 client.persistWindowOrder()
             }
@@ -1747,30 +1894,113 @@ struct WindowStrip: View {
         #endif
     }
 
-    /// The finger moved while the hold is still down. More than 8 pt lifts the thumbnail and
-    /// drags it; the drag reorders live: crossing the middle of a neighbour swaps slots, and the
-    /// lifted thumbnail's offset is corrected by the slots it has moved so it stays under the finger.
-    private func holdMoved(window: WindowInfo, index: Int, count: Int, slot: CGFloat, translation t: CGSize) {
+    /// A window's thumbnail, or a stack: its front window's thumbnail over two cards, the count on it.
+    @ViewBuilder private func tile(_ item: StripItem, index: Int) -> some View {
+        let window = item.front
+        let thumbnail = WindowThumbnail(window: window,
+                                        image: client.thumbnails[window.id],
+                                        icon: client.icons[window.bundleID],
+                                        isActive: item.windows.contains { client.active == .window($0.id) },
+                                        width: width, height: height, radius: radius, badge: badge,
+                                        menuOpen: menuFor == window.id,
+                                        lifted: lifted == item.id,
+                                        onSelect: { pick(.window(window.id)) },
+                                        onCommand: { client.command($0, window: window.id) },
+                                        onMove: { step in
+                                            client.moveWindow(window.id, to: Self.windowIndex(ofItem: index + step, in: currentItems, windows: client.orderedWindows))
+                                            client.persistWindowOrder()
+                                        })
+        if item.stacked {
+            ZStack {
+                ForEach([2, 1], id: \.self) { depth in
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(Palette.control)
+                        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                        .frame(width: width, height: height)
+                        .scaleEffect(1 - CGFloat(depth) * 0.06)
+                        .offset(y: -CGFloat(depth) * 4)
+                }
+                thumbnail
+            }
+            .overlay(alignment: .topTrailing) {
+                Text("\(item.windows.count)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 20, minHeight: 20)
+                    .background(Capsule().fill(Palette.accent))
+                    .offset(x: 6, y: -6)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(window.appName), \(item.windows.count) windows")
+            .accessibilityHint("Shows its windows")
+            .anchorPreference(key: StackAnchorKey.self, value: .bounds) {
+                client.openStack == window.bundleID ? StackAnchor(app: window.bundleID, bounds: $0) : nil
+            }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default) { tapped(item) }
+        } else {
+            thumbnail
+        }
+    }
+
+    /// A tap: a stack opens its panel (again: closes it); a window streams.
+    private func tapped(_ item: StripItem) {
+        if menuFor != nil { closeMenu(); return }
+        if item.stacked {
+            UISelectionFeedbackGenerator().selectionChanged()
+            let app = item.front.bundleID
+            withAnimation(.spring(duration: 0.28, bounce: 0.15)) { client.openStack = client.openStack == app ? nil : app }
+        } else {
+            pick(.window(item.front.id))
+        }
+    }
+
+    private func pick(_ source: StreamSource) {
+        client.select(source)
+        if client.openStack != nil { withAnimation(.easeOut(duration: 0.18)) { client.openStack = nil } }
+    }
+
+    /// Where item `index` starts among the windows (its first window's place); past the end, the last.
+    static func windowIndex(ofItem index: Int, in items: [StripItem], windows: [WindowInfo]) -> Int {
+        guard !items.isEmpty else { return 0 }
+        let item = items[min(max(index, 0), items.count - 1)]
+        return windows.firstIndex { $0.id == item.windows.last(where: { _ in index >= items.count - 1 })?.id ?? item.front.id }
+            ?? max(0, windows.count - 1)
+    }
+
+    /// The finger moved while the hold is still down. More than 8 pt lifts the thumbnail (or the
+    /// stack) and drags it; the drag reorders live: crossing the middle of a neighbour swaps slots,
+    /// and the lifted thumbnail's offset is corrected by the slots it has moved so it stays under the
+    /// finger. A stack moves its app's windows together (StreamClient.moveWindow).
+    private func holdMoved(item: StripItem, index: Int, count: Int, slot: CGFloat, translation t: CGSize) {
         if lifted == nil {
             guard abs(t.width) > 8 || abs(t.height) > 8 else { return }
             closeMenu()
-            lifted = window.id
+            lifted = item.id
             liftStartIndex = index
+            lastTarget = index
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
-        guard lifted == window.id else { return }
+        guard lifted == item.id else { return }
         let shift = Int((t.width / slot).rounded())
         let target = max(0, min(count - 1, liftStartIndex + shift))
-        if let current = client.orderedWindows.firstIndex(where: { $0.id == window.id }), current != target {
+        // One move a slot the finger reaches: an app's windows move as a run, so the tile need not
+        // land on `target`, and asking again would buzz on every move.
+        if target != lastTarget, let current = currentItems.firstIndex(where: { $0.id == item.id }), current != target {
             UISelectionFeedbackGenerator().selectionChanged()
-            withAnimation(.spring(duration: 0.3, bounce: 0.15)) { client.moveWindow(window.id, to: target) }
+            let to = Self.windowIndex(ofItem: target, in: currentItems, windows: client.orderedWindows)
+            withAnimation(.spring(duration: 0.3, bounce: 0.15)) { client.moveWindow(item.front.id, to: to) }
         }
-        liftOffset = t.width - CGFloat(target - liftStartIndex) * slot
+        lastTarget = target
+        let now = currentItems.firstIndex(where: { $0.id == item.id }) ?? target
+        liftOffset = t.width - CGFloat(now - liftStartIndex) * slot
     }
 
     /// The finger lifted after a hold: drop the thumbnail (the submenu, if open, stays).
-    private func holdEnded(window: WindowInfo) {
-        guard lifted == window.id else { return }
+    private func holdEnded(item: StripItem) {
+        guard lifted == item.id else { return }
         withAnimation(.spring(duration: 0.3, bounce: 0.2)) { lifted = nil; liftOffset = 0 }
         client.persistWindowOrder()
     }
@@ -1832,6 +2062,106 @@ struct HoldDragOverlay: UIViewRepresentable {
 }
 
 /// The frame of the thumbnail whose submenu is open, reported up to the screen root.
+/// Where the open stack's tile is, for its panel (`StackPanel`), drawn by the stream screen.
+struct StackAnchor: Equatable {
+    let app: String
+    let bounds: Anchor<CGRect>
+    static func == (a: StackAnchor, b: StackAnchor) -> Bool { a.app == b.app }
+}
+
+struct StackAnchorKey: PreferenceKey {
+    static var defaultValue: StackAnchor? = nil
+    static func reduce(value: inout StackAnchor?, nextValue: () -> StackAnchor?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
+/// An app's windows, opened from its stack in the strip: a panel over the strip, the app's name and
+/// count on top, each window larger than in the strip with its title under it. A tap shows that window
+/// and closes the panel; a tap anywhere else closes it.
+struct StackPanel: View {
+    @ObservedObject var client: StreamClient
+    let anchor: StackAnchor
+    let screen: CGSize
+    let below: Bool
+
+    static let cardWidth: CGFloat = 132
+    static let cardHeight: CGFloat = 82
+
+    var body: some View {
+        let windows = client.orderedWindows.filter { $0.bundleID == anchor.app }
+        GeometryReader { geo in
+            let tile = geo[anchor.bounds]
+            let width = min(geo.size.width - 24, CGFloat(windows.count) * (Self.cardWidth + 10) + 30)
+            let height: CGFloat = 44 + Self.cardHeight + 36
+            let x = min(max(tile.midX, width / 2 + 12), geo.size.width - width / 2 - 12)
+            let y = below ? tile.maxY + 10 + height / 2 : tile.minY - 10 - height / 2
+            ZStack {
+                Color.black.opacity(0.35)
+                    .contentShape(Rectangle())
+                    .onTapGesture { close() }
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        AppIcon(image: client.icons[anchor.app], name: windows.first?.appName ?? "", size: 22, radius: 6, fontSize: 9)
+                        Text(windows.first?.appName ?? "")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Palette.text)
+                        Text("\(windows.count) windows")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.barLabel)
+                        Spacer(minLength: 0)
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(windows, id: \.id) { window in card(window) }
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(width: width, height: height)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.bar))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                .shadow(color: .black.opacity(0.6), radius: 24, y: 10)
+                .position(x: x, y: y)
+                .transition(.scale(scale: 0.9, anchor: below ? .top : .bottom).combined(with: .opacity))
+            }
+        }
+        .onChange(of: windows.count) { _, n in if n < 2 { close() } }
+    }
+
+    private func card(_ window: WindowInfo) -> some View {
+        let active = client.active == .window(window.id)
+        return Button {
+            client.select(.window(window.id))
+            close()
+        } label: {
+            VStack(spacing: 4) {
+                Group {
+                    if let image = client.thumbnails[window.id] {
+                        Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        Palette.thumbBody
+                    }
+                }
+                .frame(width: Self.cardWidth, height: Self.cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12), lineWidth: active ? 2 : 1))
+                Text(window.title.isEmpty ? window.appName : window.title)
+                    .font(.system(size: 11, weight: active ? .semibold : .regular))
+                    .foregroundStyle(active ? Palette.text : Palette.barLabel)
+                    .lineLimit(1)
+                    .frame(width: Self.cardWidth)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(window.title.isEmpty ? window.appName : window.title)" + (active ? ", showing now" : ""))
+    }
+
+    private func close() { withAnimation(.easeOut(duration: 0.18)) { client.openStack = nil } }
+}
+
 struct WindowMenuAnchorKey: PreferenceKey {
     static var defaultValue: Anchor<CGRect>? = nil
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
@@ -2081,6 +2411,19 @@ struct AppDrawer: View {
             searchField
             ScrollView {
                 VStack(spacing: 6) {
+                    if search.isEmpty {
+                        DrawerRow(height: 50, highlighted: client.active == .desktop, title: "Desktop",
+                                  trailing: nil, action: {
+                                      client.select(.desktop)
+                                      withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+                                  }) {
+                            Image(systemName: "desktopcomputer")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Palette.text)
+                                .frame(width: 32, height: 32)
+                                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Palette.control))
+                        }
+                    }
                     if !openApps.isEmpty {
                         header("Open now")
                         ForEach(openApps) { app in
