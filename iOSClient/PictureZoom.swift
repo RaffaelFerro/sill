@@ -154,3 +154,21 @@ final class PictureZoom: ObservableObject {
     }
 }
 
+/// Aa's Auto (Raffael, 2026-10-21): the largest text whose window the Mac's app takes whole. A viewport
+/// asks the Mac for a window of the room's size ÷ the scale; an app with a minimum size larger than that
+/// keeps its own, which the picture then letterboxes (black under it). Auto starts at 1× and steps down
+/// until the window the Mac reports is the size asked. Pure, checked by Tests/checks/picture-zoom.
+enum AutoFit {
+    /// Tried in this order.
+    static let steps: [Double] = [1, 0.75, 0.5]
+
+    /// Whether `window` (the Mac's points) is the window a viewport of `room` at `scale` asks for, or
+    /// within it: then nothing is letterboxed.
+    static func fits(window: CGSize, room: CGSize, scale: Double) -> Bool {
+        guard scale > 0, room.width > 0, room.height > 0 else { return true }
+        return window.width <= room.width / scale + 4 && window.height <= room.height / scale + 4
+    }
+
+    /// The next scale to try after `scale` did not fit, nil when none is left.
+    static func next(after scale: Double) -> Double? { steps.first { $0 < scale - 0.001 } }
+}

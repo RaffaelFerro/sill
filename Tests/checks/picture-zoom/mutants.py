@@ -29,6 +29,9 @@ MUTANTS = {
     "Z19 a click answered after the lift followed at once": ("        if touchFollowDelay > 0, sinceLift < touchFollowDelay {", "        if false, sinceLift < touchFollowDelay {"),
     "Z21 a lost touch keeps holding": ("    func offered() { offering += 1; settleTouches() }", "    func offered() { offering += 1 }"),
     "Z22 a lost touch kept when the old arrangement goes": ("    func withdrawn() { offering = max(0, offering - 1); settleTouches() }", "    func withdrawn() { offering = max(0, offering - 1) }"),
+    "Z24 auto never steps down": ("static func next(after scale: Double) -> Double? { steps.first { $0 < scale - 0.001 } }", "static func next(after scale: Double) -> Double? { nil }"),
+    "Z25 auto judges the width alone": ("return window.width <= room.width / scale + 4 && window.height <= room.height / scale + 4", "return window.width <= room.width / scale + 4"),
+    "Z26 auto with no slack": ("window.width <= room.width / scale + 4 &&", "window.width <= room.width / scale &&"),
 }
 caught = 0
 for name, (old, new) in MUTANTS.items():

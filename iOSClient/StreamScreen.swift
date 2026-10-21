@@ -113,6 +113,10 @@ struct StreamScreen: View {
     /// been asked to fit (the control shows 1× for it). Up here, like `latched`, so it survives
     /// rotation and both layouts share it.
     @State private var textScale: Double? = nil
+    /// Aa's Auto (`AutoFit`): the scale that fit each window in each room ("id@W×H"), once found.
+    @State private var autoScales: [String: Double] = [:]
+    /// The check that follows a viewport sent under Auto: whether the Mac's app took the window whole.
+    @State private var autoCheck: Task<Void, Never>?
     /// The Aa slider is unfolded (finger down): the bars fade their other buttons meanwhile.
     @State private var scaleOpen = false
     /// The thumbnail whose traffic-light submenu is open (held for 1.5 s). The bars clip their
@@ -469,14 +473,48 @@ struct StreamScreen: View {
             }
             guard client.connected, panelSize.width > 0, panelSize.height > 0 else { return }
             let fps = StreamClient.wantedFPS(remote: client.awayCapsFrameRate)
+            let scale = textScale ?? autoScale
             #if DEBUG
             print("viewport: \(Self.points(panelSize.width))×\(Self.points(panelSize.height)) pt, scale "
-                  + (textScale.map { TextScaleControl.label($0) } ?? "none") + ", \(fps) fps")
+                  + TextScaleControl.label(scale) + (textScale == nil ? " (Auto)" : "") + ", \(fps) fps")
             #endif
             client.sendViewport(Viewport(width: Double(panelSize.width),
                                          height: Double(panelSize.height),
-                                         scale: textScale,
+                                         scale: scale,
                                          fps: fps))
+            if textScale == nil { checkAutoFit() }
+        }
+    }
+
+    /// Auto's key for the window streaming now in this room, nil for the Desktop or nothing.
+    private var autoKey: String? {
+        guard case .window(let id) = client.active else { return nil }
+        return "\(id)@\(Int(panelSize.width))x\(Int(panelSize.height))"
+    }
+
+    /// Auto's scale for what streams now: what fit before in this room, else 1×.
+    private var autoScale: Double { autoKey.flatMap { autoScales[$0] } ?? AutoFit.steps[0] }
+
+    /// Auto: once the Mac has had time to resize the window (and list it again), a window larger than
+    /// asked (its app's minimum) tries the next smaller scale, until one fits or none is left.
+    private func checkAutoFit() {
+        autoCheck?.cancel()
+        guard let key = autoKey, case .window(let id) = client.active else { return }
+        let scale = autoScale, room = panelSize
+        autoCheck = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled, textScale == nil, autoKey == key, panelSize == room,
+                  let w = client.windows.first(where: { $0.id == id }) else { return }
+            let window = CGSize(width: w.width, height: w.height)
+            guard !AutoFit.fits(window: window, room: room, scale: scale), let next = AutoFit.next(after: scale) else {
+                autoScales[key] = scale
+                return
+            }
+            #if DEBUG
+            print("auto: \(w.appName) is \(w.width)×\(w.height) pt, larger than asked at \(TextScaleControl.label(scale))×; trying \(TextScaleControl.label(next))×")
+            #endif
+            autoScales[key] = next
+            sendViewport()
         }
     }
 
@@ -1402,7 +1440,9 @@ struct TextScaleControl: View {
     /// a hold shows its ruler above Aa's, which the finger reaches by moving up. nil: Aa alone.
     var zoom: PictureZoom? = nil
 
-    static let steps: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5]
+    /// The detents, Auto first: 0 stands for Auto (`scale` nil), the Sill's own pick
+    /// (`AutoFit`): the largest text whose window the Mac's app takes whole.
+    static let steps: [Double] = [0, 0.5, 0.75, 1.0, 1.25, 1.5]
     /// Padding either side of the visible ruler; two detents show each side of the thumb.
     static let sliderInset: CGFloat = 30
     var sliderWidth: CGFloat { pointsPerStep * CGFloat(Self.steps.count - 1) + Self.sliderInset * 2 }
@@ -1433,9 +1473,9 @@ struct TextScaleControl: View {
                     .foregroundStyle(Palette.text)
             }
             if let zoom {
-                ZoomValueLabel(zoom: zoom, text: Self.label(scale ?? 1.0) + "×")
+                ZoomValueLabel(zoom: zoom, text: Self.valueLabel(scale ?? 0))
             } else {
-                Text(Self.label(scale ?? 1.0) + "×")
+                Text(Self.valueLabel(scale ?? 0))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Palette.barLabel)
             }
@@ -1462,7 +1502,7 @@ struct TextScaleControl: View {
         }
         .zIndex(open ? 1 : 0)
         .onChange(of: open, initial: true) { _, isOpen in
-            if isOpen { live = scale ?? 1.0; liveZoom = zoom?.scale ?? 1.0 }
+            if isOpen { live = scale ?? 0; liveZoom = zoom?.scale ?? 1.0 }
         }
         .contentShape(Rectangle())
         .gesture(
@@ -1472,7 +1512,7 @@ struct TextScaleControl: View {
                         let start = Date()
                         touchStart = start
                         onZoom = false
-                        startValue = scale ?? 1.0
+                        startValue = scale ?? 0
                         live = startValue
                         liveZoom = zoom?.scale ?? 1.0
                         startX = g.location.x
@@ -1509,7 +1549,7 @@ struct TextScaleControl: View {
                             withAnimation(.easeOut(duration: 0.1)) { liveZoom = snapped }
                         }
                     } else {
-                        let snapped = Self.snap(startValue + steps * 0.25)
+                        let snapped = Self.snap(startValue, by: steps, in: Self.steps)
                         if snapped != live {
                             UISelectionFeedbackGenerator().selectionChanged()
                             withAnimation(.easeOut(duration: 0.1)) { live = snapped }
@@ -1523,8 +1563,8 @@ struct TextScaleControl: View {
                         zoom.toggle()                                // a tap: the zoom on or off
                     } else if onZoom {
                         if let zoom, zoom.scale != liveZoom { zoom.scale = liveZoom }
-                    } else if (scale ?? 1.0) != live {
-                        scale = live     // a plain tap on an untouched control changes nothing
+                    } else if (scale ?? 0) != live {
+                        scale = live == 0 ? nil : live     // a plain tap on an untouched control changes nothing
                     }
                     touchStart = nil
                     withAnimation(.easeOut(duration: 0.2)) { open = false; onZoom = false }
@@ -1533,14 +1573,16 @@ struct TextScaleControl: View {
         .onDisappear { open = false }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Text size")
-        .accessibilityValue("\(Self.label(scale ?? 1.0)) times")
+        .accessibilityValue(scale.map { "\(Self.label($0)) times" } ?? "Auto")
         .accessibilityAdjustableAction { direction in
-            let i = Self.steps.firstIndex(of: scale ?? 1.0) ?? 2
+            let i = Self.steps.firstIndex(of: scale ?? 0) ?? 0
+            let next: Double
             switch direction {
-            case .increment: scale = Self.steps[min(i + 1, Self.steps.count - 1)]
-            case .decrement: scale = Self.steps[max(i - 1, 0)]
-            @unknown default: break
+            case .increment: next = Self.steps[min(i + 1, Self.steps.count - 1)]
+            case .decrement: next = Self.steps[max(i - 1, 0)]
+            @unknown default: return
             }
+            scale = next == 0 ? nil : next
         }
         .modifier(ZoomActions(zoom: zoom))
     }
@@ -1591,7 +1633,7 @@ struct TextScaleControl: View {
             // (a phone's row 1, the compact window bar) `midY - 34` put the top of its digits 2 pt
             // outside the clip; it sits where the 58 pt bars put it (1 pt above the frame's top,
             // the digits 2 pt inside), and in the taller bars as it always has.
-            Text(Self.label(live) + "×")
+            Text(Self.valueLabel(live))
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Palette.text)
                 .frame(width: 60, alignment: .center)
@@ -1602,12 +1644,6 @@ struct TextScaleControl: View {
         .opacity(active ? 1 : 0.55)
     }
 
-    /// Nearest detent, clamped to the ends.
-    static func snap(_ value: Double) -> Double {
-        let clamped = min(max(value, steps[0]), steps[steps.count - 1])
-        return steps.min { abs($0 - clamped) < abs($1 - clamped) } ?? 1.0
-    }
-
     /// `values`' detent `steps` detents (rounded) from `start`, clamped to the ends.
     static func snap(_ start: Double, by steps: Double, in values: [Double]) -> Double {
         let from = values.firstIndex(of: start) ?? 0
@@ -1615,8 +1651,12 @@ struct TextScaleControl: View {
         return values[index]
     }
 
-    /// 0.5, 0.75, 1, 1.25, 1.5: trailing zeros dropped, and "1" rather than "1.0".
+    /// Under Aa and over the thumb: "Auto", or "0.75×".
+    static func valueLabel(_ scale: Double) -> String { scale == 0 ? "Auto" : label(scale) + "×" }
+
+    /// 0.5, 0.75, 1, 1.25, 1.5: trailing zeros dropped, and "1" rather than "1.0"; 0 is Auto.
     static func label(_ scale: Double) -> String {
+        if scale == 0 { return "Auto" }
         var text = String(format: "%.2f", scale)
         while text.hasSuffix("0") { text.removeLast() }
         if text.hasSuffix(".") { text.removeLast() }

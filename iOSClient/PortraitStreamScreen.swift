@@ -188,7 +188,7 @@ struct PortraitStreamScreen: View {
     private func halves(_ size: CGSize) -> some View {
         // At the middle, as before; on the Duo (iOS 27.1) at the fold's real band half-folded, and
         // open flat at the picture's own shape (docs/iphone-duo-plan.md, (b1) and (b2)).
-        let split = DuoPosture.portraitSplit(size, duoFold, aspect: client.duoPaneAspect(textScale: textScale),
+        let split = DuoPosture.portraitSplit(size, duoFold, aspect: client.duoPaneAspect(textScale: textScale ?? AutoFit.steps[0]),
                                              controls: metrics.controlsHeight)
         let half = split.picture
         return ZStack(alignment: .topLeading) {

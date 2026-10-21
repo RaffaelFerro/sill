@@ -165,6 +165,18 @@ slow.withdrawn()
 slow.follow(CGPoint(x: 0.4, y: 0.4))
 check("a touch lost as the old arrangement goes holds nothing", slow.focus == CGPoint(x: 0.4, y: 0.4))
 
+// MARK: Aa's Auto
+
+check("auto: a window the size asked fits", AutoFit.fits(window: CGSize(width: 390, height: 650), room: CGSize(width: 390, height: 650), scale: 1))
+check("auto: a window wider than asked (the app's minimum) does not", !AutoFit.fits(window: CGSize(width: 500, height: 650), room: CGSize(width: 390, height: 650), scale: 1))
+check("auto: at 0.75 the room is a third larger", AutoFit.fits(window: CGSize(width: 520, height: 866), room: CGSize(width: 390, height: 650), scale: 0.75))
+check("auto: a window taller than asked (an app's minimum height) does not",
+      !AutoFit.fits(window: CGSize(width: 390, height: 800), room: CGSize(width: 390, height: 650), scale: 1))
+check("auto: a few points either way still fit", AutoFit.fits(window: CGSize(width: 393, height: 653), room: CGSize(width: 390, height: 650), scale: 1))
+check("auto: smaller than asked fits (no black at its sides is Sill's)", AutoFit.fits(window: CGSize(width: 300, height: 400), room: CGSize(width: 390, height: 650), scale: 1))
+check("auto: 1, then 0.75, then 0.5, then none", AutoFit.steps.first == 1 && AutoFit.next(after: 1) == 0.75 && AutoFit.next(after: 0.75) == 0.5 && AutoFit.next(after: 0.5) == nil)
+check("auto: no room, nothing to judge", AutoFit.fits(window: CGSize(width: 900, height: 900), room: .zero, scale: 1))
+
 // MARK: The zoom of each source
 
 let perSource = PictureZoom()
