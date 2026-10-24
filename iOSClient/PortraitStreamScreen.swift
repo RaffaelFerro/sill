@@ -958,13 +958,15 @@ private enum Key {
     case keyboard
     /// Spotlight on the Mac: always exactly ⌘Space, whatever is latched.
     case spotlight
+    /// Sill Plus: ⌘Tab held while the finger is down; sliding sideways steps through the apps.
+    case cmdTab
 
     #if DEBUG
     /// What the cap says, for `-SillInputTest` to find it by.
     var title: String? {
         switch self {
         case .press(let title, _, _), .modifier(let title, _, _): return title
-        case .arrow, .keyboard, .spotlight: return nil
+        case .arrow, .keyboard, .spotlight, .cmdTab: return nil
         }
     }
     #endif
@@ -1005,8 +1007,8 @@ private struct KeyRow: View {
         .spotlight,
     ]
 
-    /// The six that name a key.
-    private static let phone = Array(all.prefix(6))
+    /// The six that name a key, and Sill Plus's ⌘Tab.
+    private static let phone = Array(all.prefix(6)) + [.cmdTab]
 
     private var shown: [Key] {
         switch keys {
@@ -1066,6 +1068,8 @@ private struct KeyRow: View {
                     .font(.system(size: 19))
                     .foregroundStyle(Palette.text)
             }
+        case .cmdTab:
+            CmdTabCap(send: send)
         }
     }
 
@@ -1082,6 +1086,8 @@ private struct KeyRow: View {
             // Latched modifiers do not join ⌘Space, but the tap still spends them.
             Spotlight.press(send: send)
             latched = []
+        case .cmdTab:
+            break   // CmdTabCap takes its own touches
         }
     }
 
@@ -1152,6 +1158,72 @@ private struct KeyRow: View {
         }
     }
     #endif
+}
+
+/// Sill Plus's ⌘Tab key (Raffael, 2026-10-23): touch it and ⌘ goes down with one Tab, so the Mac's app
+/// switcher opens on the next app; slide right for the next ones, left to go back (⇧Tab); lift and ⌘
+/// comes up, which picks the app. A quick tap is ⌘Tab: back to the app before.
+private struct CmdTabCap: View {
+    let send: (InputEvent) -> Void
+    @State private var holding = false
+    @State private var steps = 0
+    /// How far the finger slides for one app.
+    private static let step: CGFloat = 26
+    private static let leftCommand: UInt16 = 0xE3, leftShift: UInt16 = 0xE1, tab: UInt16 = 0x2B
+    private let tick = UISelectionFeedbackGenerator()
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
+        Text("⌘⇥")
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(holding ? Palette.accent : Palette.text)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(shape.fill(holding ? Palette.controlOpen : Palette.control))
+            .contentShape(shape)
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if !holding {
+                        holding = true
+                        steps = 0
+                        tick.prepare()
+                        send(.key(hidUsage: Self.leftCommand, down: true, modifiers: KeyModifiers.command.rawValue))
+                        tab(forward: true)
+                    }
+                    let want = Int((value.translation.width / Self.step).rounded(.towardZero))
+                    while steps < want { steps += 1; tab(forward: true) }
+                    while steps > want { steps -= 1; tab(forward: false) }
+                }
+                .onEnded { _ in release() })
+            .onDisappear { release() }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Command Tab")
+            .accessibilityHint("Touch and slide sideways to switch apps on the Mac")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                KeyChord.press(Self.tab, with: .command).forEach(send)
+            }
+    }
+
+    private func tab(forward: Bool) {
+        let command = KeyModifiers.command.rawValue
+        let both = KeyModifiers([.command, .shift]).rawValue
+        if forward {
+            send(.key(hidUsage: Self.tab, down: true, modifiers: command))
+            send(.key(hidUsage: Self.tab, down: false, modifiers: command))
+        } else {
+            send(.key(hidUsage: Self.leftShift, down: true, modifiers: both))
+            send(.key(hidUsage: Self.tab, down: true, modifiers: both))
+            send(.key(hidUsage: Self.tab, down: false, modifiers: both))
+            send(.key(hidUsage: Self.leftShift, down: false, modifiers: command))
+        }
+        tick.selectionChanged()
+    }
+
+    private func release() {
+        guard holding else { return }
+        holding = false
+        send(.key(hidUsage: Self.leftCommand, down: false, modifiers: 0))
+    }
 }
 
 /// Full Screen's state, owned by `StreamScreen`: the input mode, whether the controls show, the
