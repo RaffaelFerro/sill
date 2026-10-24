@@ -1007,8 +1007,9 @@ private struct KeyRow: View {
         .spotlight,
     ]
 
-    /// The six that name a key, and Sill Plus's ⌘Tab.
-    private static let phone = Array(all.prefix(6)) + [.cmdTab]
+    /// Sill Plus's ⌘Tab first, so a slide from it has the whole row to the right, then the six that
+    /// name a key.
+    private static let phone = [Key.cmdTab] + Array(all.prefix(6))
 
     private var shown: [Key] {
         switch keys {
