@@ -194,6 +194,7 @@ struct StreamScreen: View {
     /// The screen stays awake while a session shows (Settings › This iPhone).
     @AppStorage(StreamClient.keepScreenOnKey) private var keepScreenOn = false
     @AppStorage(StreamClient.deferHomeSwipeKey) private var deferHomeSwipe = false
+    @AppStorage(StreamClient.frameRateLimitKey) private var frameRateLimit = 0
     /// Larger Picture as it was in effect when the Settings panel opened (`largerPictureNow`), which
     /// the arrangement keeps until the panel closes; nil while it is closed. The panel hangs under row
     /// 1, which the arrangement moves by the picture's growth (157 pt on an 18 Pro Max), so a change
@@ -422,6 +423,7 @@ struct StreamScreen: View {
         .onChange(of: panelSize) { _, _ in sendViewport(after: 0.25) }
         .onChange(of: fullScreenShown) { _, _ in sendViewport(after: 0.25) }
         .onChange(of: fullScreenDesktop) { _, _ in sendViewport(after: 0.25) }
+        .onChange(of: frameRateLimit) { _, _ in sendViewport(after: 0.25) }
         .onChange(of: client.active == .desktop) { _, _ in sendViewport(after: 0.25) }
         // Same wait for Aa: cycling from Off to 0.8× passes three sizes nobody wants the Mac to try.
         .onChange(of: textScale) { _, _ in sendViewport(after: 0.25) }

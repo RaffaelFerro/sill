@@ -63,8 +63,15 @@ extension StreamClient {
     static func wantedFPS(remote: Bool = false) -> Int {
         let ceiling = screenMaximumFPS()
         let rate = ProcessInfo.processInfo.isLowPowerModeEnabled ? min(60, ceiling) : ceiling
-        return remote ? min(60, rate) : rate
+        let capped = remote ? min(60, rate) : rate
+        // Settings' Frame Rate on this device (Sill Plus): 30 or 60 at most, never sent as a setting.
+        let limit = UserDefaults.standard.integer(forKey: frameRateLimitKey)
+        return limit > 0 ? min(limit, capped) : capped
     }
+
+    /// This device's own frame rate limit: 0 for the screen's, else 60 or 30. A lower rate halves the
+    /// data the Mac sends (the Mac's quality is per 60 fps), which helps a weak Wi-Fi link.
+    static let frameRateLimitKey = "Sill.frameRateLimit"
 
     /// This session is away from home through a VPN or over the internet, so it asks for 60 fps.
     var awayCapsFrameRate: Bool { remoteRoute?.capsFrameRate ?? false }

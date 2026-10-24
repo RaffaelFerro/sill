@@ -1191,7 +1191,7 @@ package final class StreamCoordinator {
         if active == .desktop, !synthetic {
             let want = wantedDeviceDesktop
             let unchanged = want.map { deviceDesktop.matches(size: $0, refreshHz: fps) } ?? !deviceDesktop.isLive
-            if !unchanged { await select(.desktop) }
+            if !unchanged || Self.desktopPixelCap(for: viewport) != desktopCapUsed { await select(.desktop) }
             return
         }
         if virtualDisplay, stage.isStaged, case .window(let id) = active {
@@ -1210,6 +1210,23 @@ package final class StreamCoordinator {
         }
         guard case .window(let id) = active, let w = catalog.window(id: id) else { return }
         if fitToViewport(w) != nil { await catalog.refreshWindows() }
+    }
+
+    /// The longest side, in pixels, a Desktop capture needs for a device whose viewport is `v`: 1,920 for
+    /// a phone's (longest side under 1,000 pt; a phone shows about 1,200 pixels across), nil (no cap)
+    /// for anything larger, or before a viewport arrived. One value for every phone room, so a keyboard
+    /// or a turn never restarts the stream for it.
+    static func desktopPixelCap(for v: Viewport?) -> CGFloat? {
+        guard let v, max(v.width, v.height) > 0, max(v.width, v.height) < 1000 else { return nil }
+        return 1920
+    }
+    /// The cap the running Desktop capture was made with, so a viewport that changes it restarts it.
+    private var desktopCapUsed: CGFloat?
+
+    /// How much a `width`×`height` capture shrinks to keep its longest side within `cap`: 1 when it fits.
+    static func desktopShrink(width: CGFloat, height: CGFloat, cap: CGFloat?) -> CGFloat {
+        guard let cap, cap > 0, max(width, height) > cap else { return 1 }
+        return cap / max(width, height)
     }
 
     /// The device desktop's size for the last viewport, or nil for the Mac's real screen: the
@@ -1491,7 +1508,13 @@ package final class StreamCoordinator {
                 } else {
                     filter = SCContentFilter(display: d, excludingWindows: [])
                 }
-                width = evenPixels(CGFloat(d.width) * captureScale); height = evenPixels(CGFloat(d.height) * captureScale)
+                // Sill Plus: a phone never shows more than about 1,200 pixels across, so a 4K Desktop
+                // goes out no larger than the phone needs (`desktopPixelCap`): at a low bitrate the
+                // encoder otherwise drops frames (enc.error) and a weak link freezes on its keyframes.
+                desktopCapUsed = Self.desktopPixelCap(for: viewport)
+                let shrink = Self.desktopShrink(width: CGFloat(d.width) * captureScale, height: CGFloat(d.height) * captureScale,
+                                                cap: desktopCapUsed)
+                width = evenPixels(CGFloat(d.width) * captureScale * shrink); height = evenPixels(CGFloat(d.height) * captureScale * shrink)
                 describe = (deviceSize.map { "the device's own desktop, \(Int($0.width))×\(Int($0.height)) pt" } ?? "the whole desktop")
                     + (useSoftwareEncoder ? " (software encoder)" : "")
                 title = "Whole Desktop"; kind = .desktop

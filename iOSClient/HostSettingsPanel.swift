@@ -60,6 +60,7 @@ struct HostSettingsPanel: View {
     @AppStorage(StreamClient.fullScreenKey) private var fullScreen = false
     @AppStorage(StreamClient.fullScreenDesktopKey) private var fullScreenDesktop = "fill"
     @AppStorage(StreamClient.keepScreenOnKey) private var keepScreenOn = false
+    @AppStorage(StreamClient.frameRateLimitKey) private var frameRateLimit = 0
     /// This device's switch for the clipboard (docs/clipboard-plan.md): on unless turned off, read by
     /// StreamClient+Clipboard at each decision; a change subscribes or stops at once.
     @AppStorage(StreamClient.clipboardKey) private var clipboardOn = true
@@ -526,6 +527,18 @@ struct HostSettingsPanel: View {
             }
             Footnote(text: Self.fullScreenFooter)
         }
+        Rows {
+            AdaptiveRow(title: "This \(device)’s Frame Rate", since: nil) {
+                Picker("This \(device)’s Frame Rate", selection: $frameRateLimit) {
+                    Text("Max").tag(0)
+                    Text("60").tag(60)
+                    Text("30").tag(30)
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+            }
+        }
+        Footnote(text: "30 fps halves what \(mac) sends: smoother on weak Wi-Fi, a little less fluid.")
         Rows {
             Toggle(isOn: $keepScreenOn) {
                 Text("Keep Screen On").foregroundStyle(Palette.text)
