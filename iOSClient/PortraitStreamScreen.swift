@@ -177,6 +177,8 @@ struct PortraitStreamScreen: View {
     var enterFullScreen: (() -> Void)? = nil
     /// Settings' Click Buttons (Sill Plus): a left and right button and a scroll bar over the picture.
     @AppStorage(PointerButtons.key) private var clickButtons = false
+    /// A hold on the Shortcuts button is choosing a shortcut (`ShortcutPicker`).
+    @State private var pickerHeld = false
 
     private var streamShape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
     /// The Duo's fold across this screen (StreamScreen, iOS 27.1): where the halves split.
@@ -368,7 +370,7 @@ struct PortraitStreamScreen: View {
                 ForEach(layout.dim.indices, id: \.self) { index in
                     shortcutsDim.placed(layout.dim[index], in: layout.size)
                 }
-                ShortcutsDrawer(client: client, open: $shortcutsOpen, showsDesktop: larger)
+                ShortcutsDrawer(client: client, open: $shortcutsOpen, showsDesktop: larger, fromBottom: larger)
                     .modifier(AfterRow1(active: larger))
                     .placed(layout.drawer, in: layout.size)
                     .transition(.opacity)
@@ -564,7 +566,7 @@ struct PortraitStreamScreen: View {
                     (drawerOpen ? AnyView(dim) : AnyView(shortcutsDim)).placed(layout.dim[index], in: size)
                 }
                 Group {
-                    if drawerOpen { drawer } else { ShortcutsDrawer(client: client, open: $shortcutsOpen, showsDesktop: true) }
+                    if drawerOpen { drawer } else { ShortcutsDrawer(client: client, open: $shortcutsOpen, showsDesktop: true, fromBottom: true) }
                 }
                 .placed(layout.drawer, in: size)
                 .transition(.opacity)
@@ -746,9 +748,33 @@ struct PortraitStreamScreen: View {
         barButton(open: shortcutsOpen, symbol: "square.grid.2x2", label: "Shortcuts", width: width,
                   accessibilityLabel: shortcutsOpen ? "Close shortcuts" : "Open shortcuts",
                   action: {
+                      // The lift of a hold that chose (or let go) is no tap.
+                      if pickerHeld { pickerHeld = false; return }
                       setSettings(false, false)
                       withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen.toggle() }
                   })
+        // Hold, slide to a shortcut and let go: it runs and the drawer closes; let go elsewhere and
+        // the drawer stays open (Raffael, 2026-10-23).
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.3)
+                .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(TourSpace.name)))
+                .onChanged { value in
+                    guard case .second(true, let drag) = value else { return }
+                    if !ShortcutPicker.shared.active {
+                        pickerHeld = true
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        setSettings(false, false)
+                        withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false; shortcutsOpen = true }
+                        ShortcutPicker.shared.begin()
+                    }
+                    if let drag { ShortcutPicker.shared.move(to: drag.location) }
+                }
+                .onEnded { _ in
+                    guard ShortcutPicker.shared.active else { return }
+                    ShortcutPicker.shared.release()
+                    // Cleared after the button's own action had its look at it.
+                    DispatchQueue.main.async { pickerHeld = false }
+                })
     }
 
     /// The Shortcuts drawer's dim: a tap on it closes the drawer instead of clicking the Mac.

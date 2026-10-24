@@ -192,12 +192,49 @@ extension StreamClient {
 }
 
 /// The drawer: the shortcuts as tiles, a tap runs one; Edit to change, reorder, delete and add.
+/// Hold the Shortcuts button, slide to a shortcut and let go to run it (Raffael, 2026-10-23): the
+/// drawer's tiles say where they are in the stream screen's space, and the button's drag says where
+/// the finger is. Main thread.
+final class ShortcutPicker: ObservableObject {
+    static let shared = ShortcutPicker()
+    /// A hold on the Shortcuts button is choosing.
+    @Published private(set) var active = false
+    /// The tile under the finger.
+    @Published private(set) var hovered: String?
+    private var frames: [String: CGRect] = [:]
+    private var actions: [String: () -> Void] = [:]
+    private let tick = UISelectionFeedbackGenerator()
+
+    func register(_ key: String, frame: CGRect, action: @escaping () -> Void) {
+        frames[key] = frame; actions[key] = action
+    }
+    func forget(_ key: String) { frames[key] = nil; actions[key] = nil }
+
+    func begin() { active = true; hovered = nil; tick.prepare() }
+    func move(to point: CGPoint) {
+        guard active else { return }
+        let key = frames.first { $0.value.contains(point) }?.key
+        if key != hovered { hovered = key; if key != nil { tick.selectionChanged() } }
+    }
+    /// The finger lifted: the tile under it runs. Whether one did.
+    @discardableResult
+    func release() -> Bool {
+        defer { active = false; hovered = nil }
+        guard active, let key = hovered, let action = actions[key] else { return false }
+        action()
+        return true
+    }
+}
+
 struct ShortcutsDrawer: View {
     @ObservedObject var client: StreamClient
     @ObservedObject var store = QuickShortcutStore.shared
+    @ObservedObject var picker = ShortcutPicker.shared
     @Binding var open: Bool
     /// The Desktop as a fixed first tile, where no thumbnail row offers it (Larger Picture).
     var showsDesktop = false
+    /// The drawer's rect lies above the button that opened it: the compact panel sits at its bottom.
+    var fromBottom = false
 
     @State private var editing = false
     @State private var editor: QuickShortcut?
@@ -207,7 +244,7 @@ struct ShortcutsDrawer: View {
     /// The drawer's bottom in the screen's space.
     @State private var drawerBottom: CGFloat = 0
 
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 8)]
+    private let columns = [GridItem(.adaptive(minimum: 78), spacing: 6)]
 
     var body: some View {
         VStack(spacing: 10) {
@@ -222,12 +259,12 @@ struct ShortcutsDrawer: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 8) {
                         if showsDesktop && !editing {
-                            tile(symbol: "desktopcomputer", title: "Desktop", detail: "The whole Mac") {
+                            tile(key: "desktop", symbol: "desktopcomputer", title: "Desktop", detail: "The whole Mac") {
                                 client.select(.desktop); close()
                             }
                         }
                         ForEach(store.shortcuts.filter { editing || $0.onlyApp == nil || $0.onlyApp == streamedApp }) { shortcut in
-                            tile(symbol: shortcut.symbol, title: shortcut.title, detail: shortcut.detail) {
+                            tile(key: shortcut.id.uuidString, symbol: shortcut.symbol, title: shortcut.title, detail: shortcut.detail) {
                                 if editing { editor = shortcut } else if client.run(shortcut) { close() }
                             }
                             .overlay(alignment: .topTrailing) { if editing { reorder(shortcut) } }
@@ -238,16 +275,18 @@ struct ShortcutsDrawer: View {
                             }
                         }
                         if editing {
-                            tile(symbol: "plus", title: "Add", detail: "A new shortcut") {
+                            tile(key: "add", symbol: "plus", title: "Add", detail: "A new shortcut") {
                                 editor = QuickShortcut(title: "", action: .keys(usage: 0x04, modifiers: KeyModifiers.command.rawValue))
                             }
                         }
                     }
                 }
                 .scrollIndicators(.hidden)
+                .frame(maxHeight: editing ? nil : 168)
+                .fixedSize(horizontal: false, vertical: !editing)
             }
         }
-        .padding(14)
+        .padding(12)
         .padding(.bottom, keyboardTop.map { max(0, drawerBottom - $0) } ?? 0)
         .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Palette.bar))
         .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -263,6 +302,8 @@ struct ShortcutsDrawer: View {
             withAnimation(.easeOut(duration: 0.25)) { keyboardTop = nil }
         }
         .onChange(of: open) { _, isOpen in if !isOpen { editing = false; editor = nil } }
+        // Compact: the panel hugs its tiles at the edge nearest the Shortcuts button.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: fromBottom ? .bottom : .top)
     }
 
     private var header: some View {
@@ -280,24 +321,29 @@ struct ShortcutsDrawer: View {
         }
     }
 
-    private func tile(symbol: String, title: String, detail: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: symbol).font(.system(size: 20))
+    private func tile(key: String, symbol: String, title: String, detail: String, action: @escaping () -> Void) -> some View {
+        let hovered = picker.hovered == key
+        return Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: symbol).font(.system(size: 17))
                 Text(title.isEmpty ? detail : title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.barLabel)
-                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
-            .foregroundStyle(Palette.text)
-            .padding(.horizontal, 6)
-            .frame(maxWidth: .infinity, minHeight: 76)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.control))
+            .foregroundStyle(hovered ? Palette.accent : Palette.text)
+            .padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(hovered ? Palette.controlOpen : Palette.control))
+            .scaleEffect(hovered ? 1.06 : 1)
+            .animation(.easeOut(duration: 0.1), value: hovered)
         }
         .buttonStyle(.plain)
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(TourSpace.name)) }) { frame in
+            picker.register(key, frame: frame, action: action)
+        }
+        .onDisappear { picker.forget(key) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title.isEmpty ? detail : "\(title), \(detail)")
         .accessibilityAddTraits(.isButton)
