@@ -61,6 +61,7 @@ struct HostSettingsPanel: View {
     @AppStorage(StreamClient.fullScreenDesktopKey) private var fullScreenDesktop = "fill"
     @AppStorage(StreamClient.keepScreenOnKey) private var keepScreenOn = false
     @AppStorage(StreamClient.frameRateLimitKey) private var frameRateLimit = 0
+    @AppStorage(PointerButtons.key) private var clickButtons = false
     /// This device's switch for the clipboard (docs/clipboard-plan.md): on unless turned off, read by
     /// StreamClient+Clipboard at each decision; a change subscribes or stops at once.
     @AppStorage(StreamClient.clipboardKey) private var clipboardOn = true
@@ -575,6 +576,13 @@ struct HostSettingsPanel: View {
         Footnote(text: aimWithoutClicking
             ? "On the trackpad, moving the pointer and lifting never clicks. Tap without moving to click; hold still, then drag, to drag."
             : "On the trackpad, a short stroke can click as it lifts, and resting on a spot presses the button.")
+        Rows {
+            Toggle(isOn: $clickButtons) {
+                Text("Click Buttons").foregroundStyle(Palette.text)
+            }
+            .rowFrame()
+        }
+        Footnote(text: "A left and a right button and a scroll bar over the picture, for where the pointer is.")
         Rows {
             Toggle(isOn: $tapToDrag) {
                 Text("Tap, Then Hold to Drag").foregroundStyle(Palette.text)

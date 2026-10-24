@@ -175,6 +175,8 @@ struct PortraitStreamScreen: View {
     var fullScreen: FullScreenControls? = nil
     /// Turns Full Screen on, where it is offered: the button at the end of a phone's row 2.
     var enterFullScreen: (() -> Void)? = nil
+    /// Settings' Click Buttons (Sill Plus): a left and right button and a scroll bar over the picture.
+    @AppStorage(PointerButtons.key) private var clickButtons = false
 
     private var streamShape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
     /// The Duo's fold across this screen (StreamScreen, iOS 27.1): where the halves split.
@@ -372,6 +374,13 @@ struct PortraitStreamScreen: View {
                     .transition(.opacity)
             }
 
+            // Settings' Click Buttons: over the picture, under Full Screen's own button.
+            if clickButtons, !drawerOpen, !shortcutsOpen, !settingsOpen {
+                PointerButtons(client: client)
+                    .placed(larger ? layout.pane(video: client.videoSize) : layout.picture, in: layout.size)
+                    .transition(.opacity)
+            }
+
             // Full Screen's way in: a translucent button in the picture's bottom-trailing corner, a
             // sibling after the picture so it takes its touches over the stream's input view.
             if let enterFullScreen, !drawerOpen, !shortcutsOpen, !settingsOpen {
@@ -520,6 +529,12 @@ struct PortraitStreamScreen: View {
             .clipped()
             .accessibilityHidden(open)
             .placed(layout.picture, in: size)
+
+            if clickButtons, !open, !settingsOpen {
+                PointerButtons(client: client)
+                    .placed(layout.picture, in: size)
+                    .transition(.opacity)
+            }
 
             // What the clipboard's chip is placed in: the picture above the controls, under the top
             // inset, so it never covers the handle.
